@@ -16,4 +16,6 @@ pub enum ErrorCode {
     NoSubmission,
     #[msg("Solver account does not match the recorded submitter")]
     SolverMismatch,
+    #[msg("Bounty deadline has not passed yet")]
+    NotExpiredYet,
 }

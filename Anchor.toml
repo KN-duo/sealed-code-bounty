@@ -6,10 +6,13 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-sealed_code_bounty = "53H6YdbveJ5LUVFf2ZpcpnsWNhoSUXy2X3te3jTbocAs"
+sealed_code_bounty = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
+
+[programs.devnet]
+sealed_code_bounty = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
 
 [provider]
-cluster = "localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [scripts]

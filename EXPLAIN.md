@@ -18,7 +18,7 @@ What every file in this repo does, as of step 2 (bare-bones escrow program, no c
 
 - **`Cargo.toml`** **(generated, untouched)** — the program crate's own manifest: declares it as a `cdylib` (needed to compile to Solana's BPF/SBF bytecode) and pulls in `anchor-lang` as its only dependency.
 
-- **`src/lib.rs`** **(hand-written)** — the program's entrypoint. Declares the on-chain program ID (`declare_id!`) and, inside the `#[program]` module, exposes the three public instructions that a client can call — `create_bounty`, `submit_solution`, `resolve_submission` — each just delegating to its handler function in `instructions/`.
+- **`src/lib.rs`** **(hand-written)** — the program's entrypoint. Declares the on-chain program ID (`declare_id!`) and, inside the `#[program]` module, exposes the four public instructions that a client can call — `create_bounty`, `submit_solution`, `resolve_submission`, `cancel_expired_bounty` — each just delegating to its handler function in `instructions/`.
 
 - **`src/state.rs`** **(hand-written)** — defines the single on-chain account type, `Bounty`: buyer's pubkey, a numeric `bounty_id`, a `test_suite_hash` (commits to the public test suite so it can't be silently swapped later), the prize amount and deadline, `submitted`/`resolved` flags, the current `solver`'s pubkey (if any), and the submitted `solution` text itself (currently stored **as plaintext** — encryption is step 3+, not yet implemented). `#[derive(InitSpace)]` lets Anchor compute how many bytes to allocate for this account automatically.
 
@@ -38,11 +38,15 @@ What every file in this repo does, as of step 2 (bare-bones escrow program, no c
 
   This instruction is explicitly commented in the source as insecure-by-design for this stage — the buyer currently has unilateral power to decide PASS/FAIL, which defeats the protocol's whole point. That trust gap is exactly what step 3–4 (Inco Lightning attestation verification) removes.
 
+- **`src/instructions/cancel_expired_bounty.rs`** **(hand-written)** — fixes a real gap: without this, a bounty with no submission and a passed deadline would lock its prize forever, since nothing else lets the buyer reclaim it. The **buyer**-facing instruction: requires the bounty is unresolved, has **no pending submission** (`!bounty.submitted` — deliberately blocks cancellation once a solver has submitted, so a buyer can't dodge paying a legitimate solution by stalling past the deadline instead of resolving), and that `Clock::get()?.unix_timestamp` is past `bounty.deadline`. Uses Anchor's `close = buyer` account constraint, which automatically sweeps the *entire* remaining account balance — both the escrowed prize and the rent-exempt reserve — back to the buyer and closes the account, rather than a manual lamport transfer like `resolve_submission` does.
+
 ## `tests/sealed-code-bounty.ts` **(hand-written)**
 
-Two integration tests that run the whole flow against a real local Solana validator (see `EXPLAIN.md` companion answer for detail, or just the test names):
+Four integration tests, run for real against live Solana devnet (not a local throwaway validator — see the deployment work in this session):
 
 1. **"escrows the prize on create, and releases it to the solver on PASS"** — creates a bounty, submits a solution, resolves PASS, and asserts the solver's on-chain wallet balance increased by exactly the prize amount.
 2. **"keeps the prize locked on FAIL, discards the submission, and allows a retry"** — creates a bounty, submits, resolves FAIL, asserts the escrow balance is untouched and the submission was wiped, then successfully resubmits to prove retry works.
+3. **"refuses to cancel a bounty before its deadline has passed"** — creates a bounty with its default far-future deadline and asserts `cancel_expired_bounty` rejects it with `NotExpiredYet`.
+4. **"refunds prize + rent to the buyer once an unsubmitted bounty expires"** — creates a bounty with a 2-second deadline, waits for it to pass, cancels, and asserts the buyer's balance increased by the full account balance (prize + rent) and the bounty account is closed.
 
-These are the tests that prove step 2's goal: the escrow/payout *money movement* is correct in isolation, before any TEE or encryption complexity gets added on top.
+Tests 1–2 prove the escrow/payout *money movement* is correct in isolation, before any TEE or encryption complexity gets added on top. Tests 3–4 cover the `cancel_expired_bounty` addition, which closes a real gap: without it, an unsubmitted bounty past its deadline would lock its prize forever.

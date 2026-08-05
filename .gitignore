@@ -6,3 +6,4 @@ dist
 build
 test-ledger
 .yarn
+tests/.keys

@@ -9,7 +9,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("53H6YdbveJ5LUVFf2ZpcpnsWNhoSUXy2X3te3jTbocAs");
+declare_id!("FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V");
 
 #[program]
 pub mod sealed_code_bounty {
@@ -45,5 +45,12 @@ pub mod sealed_code_bounty {
         passed: bool,
     ) -> Result<()> {
         crate::instructions::resolve_submission::handle_resolve_submission(ctx, bounty_id, passed)
+    }
+
+    pub fn cancel_expired_bounty(
+        ctx: Context<CancelExpiredBounty>,
+        bounty_id: u64,
+    ) -> Result<()> {
+        crate::instructions::cancel_expired_bounty::handle_cancel_expired_bounty(ctx, bounty_id)
     }
 }
