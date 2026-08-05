@@ -53,4 +53,14 @@ pub mod sealed_code_bounty {
     ) -> Result<()> {
         crate::instructions::cancel_expired_bounty::handle_cancel_expired_bounty(ctx, bounty_id)
     }
+
+    // Standalone proof-of-concept instructions (see poc_confidential_answer.rs)
+    // — not yet wired into the real bounty flow.
+    pub fn poc_set_answer(ctx: Context<PocSetAnswer>, ciphertext: Vec<u8>) -> Result<()> {
+        crate::instructions::poc_confidential_answer::handle_poc_set_answer(ctx, ciphertext)
+    }
+
+    pub fn poc_check_answer(ctx: Context<PocCheckAnswer>, ciphertext: Vec<u8>) -> Result<()> {
+        crate::instructions::poc_confidential_answer::handle_poc_check_answer(ctx, ciphertext)
+    }
 }

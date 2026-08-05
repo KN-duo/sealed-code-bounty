@@ -10,6 +10,7 @@ sealed_code_bounty = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
 
 [programs.devnet]
 sealed_code_bounty = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
+inco_lightning = "5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj"
 
 [provider]
 cluster = "devnet"

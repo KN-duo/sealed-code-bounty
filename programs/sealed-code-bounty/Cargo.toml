@@ -22,6 +22,7 @@ custom-panic = []
 
 [dependencies]
 anchor-lang = "1.1.2"
+inco-lightning = { version = "0.1", features = ["cpi"] }
 
 
 [lints.rust]
