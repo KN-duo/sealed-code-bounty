@@ -1,6 +1,7 @@
 import { useState } from "react";
 import * as anchor from "@anchor-lang/core";
-import { useProgram, bountyPda } from "./useProgram";
+import { useProgram } from "../hooks/useProgram";
+import { bountyPda } from "../lib/pda";
 
 export function CreateBountyForm({ onCreated }: { onCreated: (buyer: string, bountyId: string) => void }) {
   const program = useProgram();

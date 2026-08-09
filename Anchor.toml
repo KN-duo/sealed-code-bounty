@@ -7,9 +7,11 @@ skip-lint = false
 
 [programs.localnet]
 sealed_code_bounty = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
+sealed_code_bounty_poc = "2whLGMTr7v1dRwG4gyR9X5EBWWceaLZ57tjHfvzc5t8T"
 
 [programs.devnet]
 sealed_code_bounty = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
+sealed_code_bounty_poc = "2whLGMTr7v1dRwG4gyR9X5EBWWceaLZ57tjHfvzc5t8T"
 inco_lightning = "5sjEbPiqgZrYwR31ahR6Uk9wf5awoX61YGg7jExQSwaj"
 
 [provider]

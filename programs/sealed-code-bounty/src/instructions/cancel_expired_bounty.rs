@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, error::ErrorCode, state::Bounty};
+use crate::{constants::*, events::BountyCancelled, state::Bounty};
 
 // Lets the buyer reclaim an escrowed prize once the deadline has passed with
 // no submission ever made. Deliberately blocked while a submission is
@@ -25,12 +25,15 @@ pub fn handle_cancel_expired_bounty(
     _bounty_id: u64,
 ) -> Result<()> {
     let bounty = &ctx.accounts.bounty;
-    require!(!bounty.resolved, ErrorCode::AlreadyResolved);
-    require!(!bounty.submitted, ErrorCode::AlreadySubmitted);
-    require!(
-        Clock::get()?.unix_timestamp > bounty.deadline,
-        ErrorCode::NotExpiredYet
-    );
+    bounty.assert_open()?;
+    bounty.assert_expired(Clock::get()?.unix_timestamp)?;
+
+    emit!(BountyCancelled {
+        bounty: bounty.key(),
+        buyer: ctx.accounts.buyer.key(),
+        bounty_id: bounty.bounty_id,
+        refunded_amount: bounty.prize_amount,
+    });
 
     msg!(
         "Bounty {} expired with no submission — prize + rent refunded to buyer",

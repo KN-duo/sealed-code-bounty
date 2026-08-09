@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, error::ErrorCode, state::Bounty};
+use crate::{constants::*, error::ErrorCode, events::BountyCreated, state::Bounty};
 
 #[derive(Accounts)]
 #[instruction(bounty_id: u64)]
@@ -50,6 +50,18 @@ pub fn handle_create_bounty(
     let cpi_ctx = CpiContext::new(anchor_lang::system_program::ID, cpi_accounts);
     anchor_lang::system_program::transfer(cpi_ctx, prize_amount)?;
 
-    msg!("Bounty {} created, {} lamports escrowed", bounty_id, prize_amount);
+    emit!(BountyCreated {
+        bounty: ctx.accounts.bounty.key(),
+        buyer: ctx.accounts.buyer.key(),
+        bounty_id,
+        prize_amount,
+        deadline,
+    });
+
+    msg!(
+        "Bounty {} created, {} lamports escrowed",
+        bounty_id,
+        prize_amount
+    );
     Ok(())
 }

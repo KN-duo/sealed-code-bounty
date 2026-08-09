@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, error::ErrorCode, state::Bounty};
+use crate::{constants::*, error::ErrorCode, events::SolutionSubmitted, state::Bounty};
 
 #[derive(Accounts)]
 #[instruction(bounty_id: u64)]
@@ -26,8 +26,7 @@ pub fn handle_submit_solution(
 ) -> Result<()> {
     {
         let bounty = &ctx.accounts.bounty;
-        require!(!bounty.resolved, ErrorCode::AlreadyResolved);
-        require!(!bounty.submitted, ErrorCode::AlreadySubmitted);
+        bounty.assert_open()?;
         require!(
             solution.len() as u64 <= MAX_SOLUTION_LEN,
             ErrorCode::SolutionTooLong
@@ -45,6 +44,12 @@ pub fn handle_submit_solution(
     bounty.solver = Some(ctx.accounts.solver.key());
     bounty.solution = solution;
     bounty.submitted = true;
+
+    emit!(SolutionSubmitted {
+        bounty: bounty.key(),
+        solver: ctx.accounts.solver.key(),
+        bounty_id: bounty.bounty_id,
+    });
 
     msg!("Solution submitted for bounty {}", bounty.bounty_id);
     Ok(())

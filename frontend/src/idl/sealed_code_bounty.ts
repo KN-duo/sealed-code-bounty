@@ -282,6 +282,60 @@ export type SealedCodeBounty = {
       ]
     }
   ],
+  "events": [
+    {
+      "name": "bountyCancelled",
+      "discriminator": [
+        234,
+        186,
+        248,
+        214,
+        198,
+        69,
+        152,
+        23
+      ]
+    },
+    {
+      "name": "bountyCreated",
+      "discriminator": [
+        68,
+        252,
+        247,
+        196,
+        154,
+        247,
+        130,
+        49
+      ]
+    },
+    {
+      "name": "bountyResolved",
+      "discriminator": [
+        250,
+        202,
+        221,
+        27,
+        55,
+        88,
+        103,
+        137
+      ]
+    },
+    {
+      "name": "solutionSubmitted",
+      "discriminator": [
+        206,
+        122,
+        71,
+        176,
+        145,
+        150,
+        230,
+        5
+      ]
+    }
+  ],
   "errors": [
     {
       "code": 6000,
@@ -376,6 +430,106 @@ export type SealedCodeBounty = {
           {
             "name": "bump",
             "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "bountyCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "bountyId",
+            "type": "u64"
+          },
+          {
+            "name": "refundedAmount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "bountyCreated",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "bountyId",
+            "type": "u64"
+          },
+          {
+            "name": "prizeAmount",
+            "type": "u64"
+          },
+          {
+            "name": "deadline",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "bountyResolved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "solver",
+            "type": "pubkey"
+          },
+          {
+            "name": "bountyId",
+            "type": "u64"
+          },
+          {
+            "name": "passed",
+            "type": "bool"
+          },
+          {
+            "name": "prizeAmount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "solutionSubmitted",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "solver",
+            "type": "pubkey"
+          },
+          {
+            "name": "bountyId",
+            "type": "u64"
           }
         ]
       }

@@ -1,17 +1,7 @@
 use anchor_lang::prelude::*;
-use inco_lightning::types::Euint128;
 
 use crate::constants::MAX_SOLUTION_LEN;
-
-// Standalone proof-of-concept, not yet wired into the real bounty flow:
-// holds a confidentially-stored expected answer so a guess can be compared
-// against it via Inco Lightning's e_eq without ever revealing either value
-// on-chain in plaintext.
-#[account]
-pub struct AnswerVault {
-    pub authority: Pubkey,
-    pub expected_answer: Euint128,
-}
+use crate::error::ErrorCode;
 
 #[account]
 #[derive(InitSpace)]
@@ -27,4 +17,49 @@ pub struct Bounty {
     #[max_len(MAX_SOLUTION_LEN)]
     pub solution: String,
     pub bump: u8,
+}
+
+// Bounty moves through three states over its lifetime: open (accepting a
+// submission), awaiting resolution (submitted, not yet resolved), and a
+// terminal state (resolved, or closed via cancel_expired_bounty). These
+// methods centralize the transition guards so each instruction handler
+// asserts the precondition it needs instead of re-deriving it from the raw
+// `submitted`/`resolved` flags.
+impl Bounty {
+    pub fn is_open(&self) -> bool {
+        !self.submitted && !self.resolved
+    }
+
+    pub fn is_awaiting_resolution(&self) -> bool {
+        self.submitted && !self.resolved
+    }
+
+    pub fn is_expired(&self, now: i64) -> bool {
+        now > self.deadline
+    }
+
+    pub fn assert_open(&self) -> Result<()> {
+        require!(!self.resolved, ErrorCode::AlreadyResolved);
+        require!(!self.submitted, ErrorCode::AlreadySubmitted);
+        Ok(())
+    }
+
+    pub fn assert_awaiting_resolution(&self) -> Result<()> {
+        require!(self.submitted, ErrorCode::NoSubmission);
+        require!(!self.resolved, ErrorCode::AlreadyResolved);
+        Ok(())
+    }
+
+    pub fn assert_expired(&self, now: i64) -> Result<()> {
+        require!(self.is_expired(now), ErrorCode::NotExpiredYet);
+        Ok(())
+    }
+
+    /// Resets submission fields after a FAILed resolution so the bounty
+    /// returns to `is_open()` and a solver may retry.
+    pub fn discard_submission(&mut self) {
+        self.submitted = false;
+        self.solver = None;
+        self.solution = String::new();
+    }
 }

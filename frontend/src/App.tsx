@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { WalletContextProvider } from "./WalletContextProvider";
-import { CreateBountyForm } from "./CreateBountyForm";
-import { SubmitSolutionForm } from "./SubmitSolutionForm";
-import { BountyStatus } from "./BountyStatus";
+import { WalletContextProvider } from "./providers/WalletContextProvider";
+import { CreateBountyForm } from "./components/CreateBountyForm";
+import { SubmitSolutionForm } from "./components/SubmitSolutionForm";
+import { BountyStatus } from "./components/BountyStatus";
 
 function AppInner() {
   const [lastBuyer, setLastBuyer] = useState<string | undefined>(undefined);

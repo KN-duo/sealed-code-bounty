@@ -1,6 +1,6 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, error::ErrorCode, state::Bounty};
+use crate::{constants::*, error::ErrorCode, events::BountyResolved, state::Bounty};
 
 // MVP stand-in for the TEE relayer: the bounty's own buyer manually reports
 // PASS/FAIL. Step 4 replaces this signer check with verification of a signed
@@ -27,33 +27,45 @@ pub fn handle_resolve_submission(
 ) -> Result<()> {
     let solver_key = ctx.accounts.solver.key();
     let bounty = &mut ctx.accounts.bounty;
-    require!(bounty.submitted, ErrorCode::NoSubmission);
-    require!(!bounty.resolved, ErrorCode::AlreadyResolved);
+    bounty.assert_awaiting_resolution()?;
     require_keys_eq!(
         bounty.solver.unwrap(),
         solver_key,
         ErrorCode::SolverMismatch
     );
 
+    let bounty_key = bounty.key();
+    let bounty_id = bounty.bounty_id;
+    let prize = bounty.prize_amount;
+
     if passed {
-        let prize = bounty.prize_amount;
         **bounty.to_account_info().try_borrow_mut_lamports()? -= prize;
-        **ctx.accounts.solver.to_account_info().try_borrow_mut_lamports()? += prize;
+        **ctx
+            .accounts
+            .solver
+            .to_account_info()
+            .try_borrow_mut_lamports()? += prize;
         bounty.resolved = true;
         msg!(
             "Bounty {} PASSED — {} lamports paid to solver",
-            bounty.bounty_id,
+            bounty_id,
             prize
         );
     } else {
-        bounty.submitted = false;
-        bounty.solver = None;
-        bounty.solution = String::new();
+        bounty.discard_submission();
         msg!(
             "Bounty {} FAILED — submission discarded, solver may retry",
-            bounty.bounty_id
+            bounty_id
         );
     }
+
+    emit!(BountyResolved {
+        bounty: bounty_key,
+        solver: solver_key,
+        bounty_id,
+        passed,
+        prize_amount: prize,
+    });
 
     Ok(())
 }

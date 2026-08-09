@@ -1,6 +1,7 @@
 import { useState } from "react";
 import * as anchor from "@anchor-lang/core";
-import { useProgram, bountyPda } from "./useProgram";
+import { useProgram } from "../hooks/useProgram";
+import { bountyPda } from "../lib/pda";
 
 interface BountyAccount {
   buyer: anchor.web3.PublicKey;

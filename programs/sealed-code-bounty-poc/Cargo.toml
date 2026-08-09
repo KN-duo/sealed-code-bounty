@@ -1,13 +1,13 @@
 [package]
-name = "sealed-code-bounty"
+name = "sealed-code-bounty-poc"
 version = "0.1.0"
-description = "Created with Anchor"
+description = "Standalone Inco Lightning confidential-comparison proof of concept, isolated from the main bounty program to avoid an anchor-lang version conflict (inco-lightning pins 0.31.1, the bounty program uses 1.1.2)."
 edition.workspace = true
 rust-version.workspace = true
 
 [lib]
 crate-type = ["cdylib", "lib"]
-name = "sealed_code_bounty"
+name = "sealed_code_bounty_poc"
 
 [features]
 default = []
@@ -19,10 +19,9 @@ anchor-debug = []
 custom-heap = []
 custom-panic = []
 
-
 [dependencies]
-anchor-lang = "1.1.2"
-
+anchor-lang = "0.31.1"
+inco-lightning = { version = "0.1", features = ["cpi"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("solana"))'] }

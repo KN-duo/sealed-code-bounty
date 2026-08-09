@@ -1,6 +1,6 @@
 # EXPLAIN.md
 
-What every file in this repo does, as of step 2 (bare-bones escrow program, no confidentiality yet). Files marked **(generated, untouched)** came from `anchor init` and haven't been edited; files marked **(hand-written)** contain the actual bounty logic.
+What every file in this repo does, as of the escrow program plus a standalone Inco Lightning proof of concept (confidentiality not yet wired into the bounty flow itself). Files marked **(generated, untouched)** came from `anchor init` and haven't been edited; files marked **(hand-written)** contain the actual bounty logic.
 
 ## Root config
 
@@ -20,11 +20,13 @@ What every file in this repo does, as of step 2 (bare-bones escrow program, no c
 
 - **`src/lib.rs`** **(hand-written)** — the program's entrypoint. Declares the on-chain program ID (`declare_id!`) and, inside the `#[program]` module, exposes the four public instructions that a client can call — `create_bounty`, `submit_solution`, `resolve_submission`, `cancel_expired_bounty` — each just delegating to its handler function in `instructions/`.
 
-- **`src/state.rs`** **(hand-written)** — defines the single on-chain account type, `Bounty`: buyer's pubkey, a numeric `bounty_id`, a `test_suite_hash` (commits to the public test suite so it can't be silently swapped later), the prize amount and deadline, `submitted`/`resolved` flags, the current `solver`'s pubkey (if any), and the submitted `solution` text itself (currently stored **as plaintext** — encryption is step 3+, not yet implemented). `#[derive(InitSpace)]` lets Anchor compute how many bytes to allocate for this account automatically.
+- **`src/state.rs`** **(hand-written)** — defines the single on-chain account type, `Bounty`: buyer's pubkey, a numeric `bounty_id`, a `test_suite_hash` (commits to the public test suite so it can't be silently swapped later), the prize amount and deadline, `submitted`/`resolved` flags, the current `solver`'s pubkey (if any), and the submitted `solution` text itself (currently stored **as plaintext** — encryption is step 3+, not yet implemented). `#[derive(InitSpace)]` lets Anchor compute how many bytes to allocate for this account automatically. `Bounty` also carries a small set of methods (`is_open`, `is_awaiting_resolution`, `is_expired`, `assert_open`, `assert_awaiting_resolution`, `assert_expired`, `discard_submission`) that centralize the three-state lifecycle (open → awaiting resolution → resolved/cancelled) so each instruction handler asserts a named precondition instead of re-deriving it from the raw boolean flags.
 
 - **`src/constants.rs`** **(hand-written)** — three tunable values used across instructions: the PDA seed prefix (`BOUNTY_SEED = b"bounty"`), the fixed anti-spam fee a solver pays per submission (`SUBMISSION_FEE_LAMPORTS`), and the max allowed length of a submitted solution string (`MAX_SOLUTION_LEN`).
 
 - **`src/error.rs`** **(hand-written)** — the custom error variants the program can return (e.g. `InvalidPrizeAmount`, `AlreadyResolved`, `SolverMismatch`), each with a human-readable `#[msg(...)]` shown to clients when a transaction fails.
+
+- **`src/events.rs`** **(hand-written)** — four `#[event]` structs (`BountyCreated`, `SolutionSubmitted`, `BountyResolved`, `BountyCancelled`) emitted from the matching instruction handler on every state transition, so an off-chain indexer or the frontend can follow a bounty's lifecycle via `program.addEventListener` instead of polling `getProgramAccounts`.
 
 - **`src/instructions.rs`** **(hand-written)** — just re-exports the three instruction modules below so `lib.rs` can `use super::*;` them.
 
@@ -40,6 +42,17 @@ What every file in this repo does, as of step 2 (bare-bones escrow program, no c
 
 - **`src/instructions/cancel_expired_bounty.rs`** **(hand-written)** — fixes a real gap: without this, a bounty with no submission and a passed deadline would lock its prize forever, since nothing else lets the buyer reclaim it. The **buyer**-facing instruction: requires the bounty is unresolved, has **no pending submission** (`!bounty.submitted` — deliberately blocks cancellation once a solver has submitted, so a buyer can't dodge paying a legitimate solution by stalling past the deadline instead of resolving), and that `Clock::get()?.unix_timestamp` is past `bounty.deadline`. Uses Anchor's `close = buyer` account constraint, which automatically sweeps the *entire* remaining account balance — both the escrowed prize and the rent-exempt reserve — back to the buyer and closes the account, rather than a manual lamport transfer like `resolve_submission` does.
 
+## `programs/sealed-code-bounty-poc/` — standalone Inco Lightning proof of concept
+
+A second, separate Anchor program — not a module inside `sealed-code-bounty`. It exists to prove the confidential-comparison primitive (`e_eq` over encrypted `Euint128`s) works against Inco Lightning in isolation, before it's wired into the real bounty flow.
+
+It has to live in its own crate: `inco-lightning` pins `anchor-lang = "0.31.1"`, while `sealed-code-bounty` runs on `anchor-lang = "1.1.2"`. Anchor's `#[account]`/`#[derive(InitSpace)]` macros generate `borsh` trait impls tied to a specific `anchor-lang` version, so a single crate that depended on both would have two incompatible `borsh` implementations in scope for the same struct — that mismatch is the concrete 39-error build failure this split fixes. Keeping the two programs in separate crates within the same Cargo workspace lets each pin the `anchor-lang` version it needs; they'd talk to each other over CPI once this is wired into the real flow, not via shared Rust types.
+
+- **`Cargo.toml`** — pins `anchor-lang = "0.31.1"` (matching `inco-lightning`'s own requirement) and depends on `inco-lightning` with the `cpi` feature.
+- **`src/state.rs`** — `AnswerVault`: an authority pubkey plus a confidentially-stored `Euint128` expected answer.
+- **`src/instructions.rs`** — `set_answer` (CPIs into Inco Lightning to store an encrypted expected value) and `check_answer` (CPIs a `new_euint128` + `e_eq` comparison against it, then calls `allow` so only the guesser can decrypt the match/no-match result).
+- **`src/lib.rs`** — entrypoint, `declare_id!`, and the two-instruction `#[program]` module.
+
 ## `tests/sealed-code-bounty.ts` **(hand-written)**
 
 Four integration tests, run for real against live Solana devnet (not a local throwaway validator — see the deployment work in this session):
@@ -48,5 +61,13 @@ Four integration tests, run for real against live Solana devnet (not a local thr
 2. **"keeps the prize locked on FAIL, discards the submission, and allows a retry"** — creates a bounty, submits, resolves FAIL, asserts the escrow balance is untouched and the submission was wiped, then successfully resubmits to prove retry works.
 3. **"refuses to cancel a bounty before its deadline has passed"** — creates a bounty with its default far-future deadline and asserts `cancel_expired_bounty` rejects it with `NotExpiredYet`.
 4. **"refunds prize + rent to the buyer once an unsubmitted bounty expires"** — creates a bounty with a 2-second deadline, waits for it to pass, cancels, and asserts the buyer's balance increased by the full account balance (prize + rent) and the bounty account is closed.
+
+## `frontend/src/` — React + Vite client
+
+- **`hooks/useProgram.ts`** — builds an `AnchorProvider` from the connected wallet-adapter wallet and returns a typed `Program<SealedCodeBounty>`, or `null` while no wallet is connected.
+- **`lib/pda.ts`** — the program ID and `bountyPda(buyer, bountyId)`, the pure PDA-derivation helper every component needs; kept out of the hook so it can be imported without pulling in React.
+- **`providers/WalletContextProvider.tsx`** — wires up `ConnectionProvider` (devnet) and `WalletProvider` (Phantom, Solflare) around the app.
+- **`components/CreateBountyForm.tsx`**, **`components/SubmitSolutionForm.tsx`**, **`components/BountyStatus.tsx`** — the three user-facing flows: post a bounty, submit a solution, and check/resolve/cancel a bounty by buyer address + ID.
+- **`idl/sealed_code_bounty.json`** / **`idl/sealed_code_bounty.ts`** — the IDL and generated TypeScript types `anchor build` emits for `sealed-code-bounty`; copied in from `target/idl` and `target/types` after each program change so the frontend's types stay in sync with what's actually deployed.
 
 Tests 1–2 prove the escrow/payout *money movement* is correct in isolation, before any TEE or encryption complexity gets added on top. Tests 3–4 cover the `cancel_expired_bounty` addition, which closes a real gap: without it, an unsubmitted bounty past its deadline would lock its prize forever.

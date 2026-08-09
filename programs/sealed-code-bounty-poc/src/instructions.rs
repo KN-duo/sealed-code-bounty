@@ -5,17 +5,12 @@ use inco_lightning::ID as INCO_LIGHTNING_ID;
 
 use crate::state::AnswerVault;
 
-// PROOF OF CONCEPT ONLY — proves the confidential-comparison mechanism works
-// in isolation before it's wired into the real bounty submit/resolve flow.
-// This is deliberately separate: it does NOT touch the Bounty account or
-// the escrow logic. Scope is "encrypted answer verification" (submit an
-// encrypted guess, compare against an encrypted expected value, learn only
-// match/no-match) — not arbitrary code execution, which Inco Lightning does
-// not support (see README's corrected architecture notes).
+// 8 (discriminator) + 32 (authority: Pubkey) + 16 (expected_answer: Euint128 wraps u128)
+const ANSWER_VAULT_SPACE: usize = 8 + 32 + 16;
 
 #[derive(Accounts)]
-pub struct PocSetAnswer<'info> {
-    #[account(init, payer = authority, space = 8 + AnswerVault::INIT_SPACE)]
+pub struct SetAnswer<'info> {
+    #[account(init, payer = authority, space = ANSWER_VAULT_SPACE)]
     pub vault: Account<'info, AnswerVault>,
     #[account(mut)]
     pub authority: Signer<'info>,
@@ -25,7 +20,7 @@ pub struct PocSetAnswer<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_poc_set_answer(ctx: Context<PocSetAnswer>, ciphertext: Vec<u8>) -> Result<()> {
+pub fn handle_set_answer(ctx: Context<SetAnswer>, ciphertext: Vec<u8>) -> Result<()> {
     let cpi_ctx = CpiContext::new(
         ctx.accounts.inco_lightning_program.to_account_info(),
         Operation {
@@ -40,7 +35,7 @@ pub fn handle_poc_set_answer(ctx: Context<PocSetAnswer>, ciphertext: Vec<u8>) ->
 }
 
 #[derive(Accounts)]
-pub struct PocCheckAnswer<'info> {
+pub struct CheckAnswer<'info> {
     #[account(mut)]
     pub vault: Account<'info, AnswerVault>,
     #[account(mut)]
@@ -54,15 +49,28 @@ pub struct PocCheckAnswer<'info> {
     pub system_program: Program<'info, System>,
 }
 
-pub fn handle_poc_check_answer(ctx: Context<PocCheckAnswer>, ciphertext: Vec<u8>) -> Result<()> {
-    let cpi_ctx = CpiContext::new(
-        ctx.accounts.inco_lightning_program.to_account_info(),
-        Operation {
-            signer: ctx.accounts.guesser.to_account_info(),
-        },
-    );
-    let guess = new_euint128(cpi_ctx.clone(), ciphertext, 0)?;
-    let is_match = e_eq(cpi_ctx, ctx.accounts.vault.expected_answer, guess, 0)?;
+pub fn handle_check_answer(ctx: Context<CheckAnswer>, ciphertext: Vec<u8>) -> Result<()> {
+    let guess = new_euint128(
+        CpiContext::new(
+            ctx.accounts.inco_lightning_program.to_account_info(),
+            Operation {
+                signer: ctx.accounts.guesser.to_account_info(),
+            },
+        ),
+        ciphertext,
+        0,
+    )?;
+    let is_match = e_eq(
+        CpiContext::new(
+            ctx.accounts.inco_lightning_program.to_account_info(),
+            Operation {
+                signer: ctx.accounts.guesser.to_account_info(),
+            },
+        ),
+        ctx.accounts.vault.expected_answer,
+        guess,
+        0,
+    )?;
 
     let allow_ctx = CpiContext::new(
         ctx.accounts.inco_lightning_program.to_account_info(),
