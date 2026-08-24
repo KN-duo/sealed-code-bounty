@@ -3,8 +3,10 @@ use anchor_lang::prelude::*;
 use crate::{constants::*, error::ErrorCode, events::BountyResolved, state::Bounty};
 
 // MVP stand-in for the TEE relayer: the bounty's own buyer manually reports
-// PASS/FAIL. Step 4 replaces this signer check with verification of a signed
-// Inco attestation, so nobody (including the buyer) can lie about the result.
+// PASS/FAIL. Phase 1 (v2) replaces this whole instruction with
+// `resolve_with_attestation`, which verifies an enclave-signed verdict
+// (AWS Nitro, ed25519) so nobody — including the buyer — can lie about the
+// result. See docs/BUILD_PLAN_v2.md §4.1.
 #[derive(Accounts)]
 #[instruction(bounty_id: u64)]
 pub struct ResolveSubmission<'info> {

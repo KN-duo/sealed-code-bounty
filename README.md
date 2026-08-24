@@ -1,117 +1,114 @@
 # SealedCodeBounty
 
-A confidential, automatically-verified bounty protocol on Solana. Post a bounty with an automated test/verification suite and locked prize money; solvers submit solutions that are checked **inside a secure enclave** — nobody, including the bounty poster or the platform, ever sees a submission unless it's verified correct **and** payment has already been released. If it fails, the code is never exposed to anyone.
+A confidential, automatically-verified **exploit bounty** protocol on Solana. A buyer posts a vulnerable environment and locks a prize in escrow; hunters submit exploits that are decrypted and run **only inside a hardware Trusted Execution Environment (TEE)**. An exploit succeeds if its output contains a hidden, platform-generated flag. On success the escrow releases to the hunter and the buyer receives the exploit; **on failure the exploit is never seen by anyone** — not the buyer, not the platform.
 
-This fixes something existing bug bounty platforms (Immunefi, HackerOne, Bugcrowd) structurally cannot: today, submitting an exploit or solution means trusting a human reviewer not to steal, leak, or reject-and-reuse your work before paying you. This protocol removes that human entirely for anything that can be objectively, automatically checked.
+This removes the trust gap that existing bug-bounty platforms (Immunefi, HackerOne, Bugcrowd) structurally cannot close: today, submitting an exploit means trusting a human reviewer not to steal, leak, or reject-and-reuse your work before paying you. Here the human is replaced by a TEE-signed verdict the Solana program checks on-chain.
+
+> **Status:** v2 is under active construction on the `v2` branch. The **escrow
+> program works** (create / submit / resolve / cancel, tested on localnet), but
+> the current `resolve_submission` is an **insecure manual placeholder** and
+> submissions are currently **plaintext** — the confidential TEE verification
+> flow is exactly what the v2 build adds. The full, authoritative spec is
+> [`docs/BUILD_PLAN_v2.md`](docs/BUILD_PLAN_v2.md).
 
 ## Table of contents
 - [The problem](#the-problem)
 - [How it works — user flow](#how-it-works--user-flow)
 - [Architecture](#architecture)
-- [Why Inco Lightning (and not Magic Block or Arcium)](#why-inco-lightning-and-not-magic-block-or-arcium)
-- [Detailed technical flow](#detailed-technical-flow)
-- [MVP scope — what we're building first](#mvp-scope--what-were-building-first)
-- [Tools & environment setup](#tools--environment-setup)
-- [Build plan — step by step](#build-plan--step-by-step)
-- [Open risks / honest unknowns](#open-risks--honest-unknowns)
+- [Why AWS Nitro (and not Inco Lightning)](#why-aws-nitro-and-not-inco-lightning)
+- [Repository layout](#repository-layout)
+- [Build & test](#build--test)
+- [Current status vs. the plan](#current-status-vs-the-plan)
+- [§11 — Trust model (honest v1 disclosure)](#11--trust-model-honest-v1-disclosure)
 
 ## The problem
 
-Anyone who wants to earn money by writing a program to spec, finding a security exploit, or solving an algorithmic challenge for a prize currently has to expose their actual work *before* being guaranteed payment. The buyer (or platform reviewer) sees the solution, and there's nothing stopping them from taking it, rejecting the submission on a technicality, and using it anyway. This is a real, documented fear in security research (see the "zero-knowledge proof of exploitability" discussions from Trail of Bits and others) — bounty platforms today solve payment trust (via escrow) but not **code-theft trust**.
+Anyone earning money by finding a security exploit for a prize currently has to expose their actual work *before* being guaranteed payment. The buyer or platform reviewer sees the exploit, and nothing stops them from taking it, rejecting the submission on a technicality, and using it anyway. Bounty platforms solve *payment* trust (via escrow) but not **code-theft** trust. SealedCodeBounty closes that second gap for anything that can be objectively, automatically verified.
 
 ## How it works — user flow
 
-1. **Buyer** posts a bounty: a description, an automated test suite (or exploit-verification script), and locks the prize amount in escrow on Solana. The tests themselves are public — only *solutions* are secret.
-2. **Solver** writes a candidate solution locally, pays a small non-refundable anti-spam fee, and submits it **encrypted** — the plaintext code never leaves their machine unencrypted.
-3. The encrypted submission is decrypted and executed **only inside a Trusted Execution Environment (TEE)** — a hardware-secured black box that not even the platform operator can see inside.
-4. The TEE runs the buyer's tests against the solution and produces a **signed attestation**: PASS or FAIL, cryptographically provable to have come from genuine, untampered hardware.
-5. The Solana program checks the attestation signature. If PASS: the escrowed prize releases **automatically** to the solver, and the buyer receives the now-paid-for solution. If FAIL: nothing releases, and the code is discarded — never seen by anyone.
+1. **Buyer** packages a vulnerable environment (a Docker image with a placeholder `/flag`), locks a prize in escrow, and pins the environment + manifest hashes and a `flag_commitment` on-chain via `create_bounty`.
+2. **Hunter** develops an exploit locally against a **flag-stripped replica** (the *dev plane* — a normal Docker sandbox, no TEE), then submits it **encrypted to the enclave's public key**. The plaintext never leaves their machine unencrypted.
+3. The exploit is decrypted and executed **only inside an AWS Nitro Enclave** (the *verification plane*). The enclave injects the real flag, runs the exploit once against the target under `nsjail`, and checks whether the output contains the flag.
+4. The enclave emits an **ed25519-signed verdict** bound to `{bounty, env, exploit, solver, flag_commitment, outcome}`.
+5. A permissionless relayer submits the verdict; the Solana program **verifies the signature against operator keys pinned in `Config`** (via the native Ed25519 program) and, on PASS, pays the hunter and writes the encrypted exploit into a `Reveal` PDA for the buyer to decrypt. On FAIL, nothing releases and the exploit is discarded.
+
+**Two-plane rule:** confidentiality only matters at *verification* time. Hunters develop against flag-stripped replicas with no secrets in them; the real flag and the plaintext exploit only ever coexist inside the enclave.
 
 ## Architecture
 
 ```
-┌─────────────┐        1. create bounty          ┌──────────────────────┐
-│    Buyer    │ ───────(tests + locked prize)───▶ │   Solana Program      │
-└─────────────┘                                    │   (Anchor, on-chain)  │
-                                                     │  - Escrow PDA         │
-┌─────────────┐        2. pay fee +                │  - Submission registry│
-│   Solver    │ ───────submit encrypted code───▶   │  - Attestation check  │
-└─────────────┘                                     │  - Payout logic       │
-                                                     └───────────┬───────────┘
-                                                                 │ 3. request execution
-                                                                 ▼
-                                                     ┌──────────────────────┐
-                                                     │   Inco Lightning TEE  │
-                                                     │  - Decrypts code      │
-                                                     │    INSIDE enclave     │
-                                                     │  - Runs vs. tests     │
-                                                     │  - Signs attestation  │
-                                                     └───────────┬───────────┘
-                                                                 │ 4. signed PASS/FAIL
-                                                                 ▼
-                                                     back to Solana Program
-                                                     → releases escrow automatically
+┌─────────────┐  create_bounty (escrow SOL,        ┌────────────────────────┐
+│    Buyer    │  pin env/manifest hashes,          │   Solana Program        │
+└─────────────┘  flag_commitment, buyer X25519 pk)  │   (Anchor, on-chain)    │
+                              ───────────────────▶  │  Config (operator keys) │
+┌─────────────┐  submit_exploit                     │  Bounty PDA (escrow)    │
+│   Hunter    │  (encrypted to enclave key) ─────▶  │  Reveal / Receipt PDAs  │
+└─────┬───────┘                                     └───────────┬────────────┘
+      │ develop against flag-stripped replica                   │ resolve_with_attestation
+      ▼ (DEV PLANE — Docker + nsjail, NOT a TEE)                ▼ (Ed25519 verify + payout)
+┌──────────────────────────────┐        signed verdict   ┌────────────────────┐
+│  VERIFIER — AWS Nitro Enclave │ ───────────────────────▶│  Relayer (permissionless)
+│  inject flag · run · sign     │                         └────────────────────┘
+└──────────────────────────────┘
 ```
 
-## Why Inco Lightning (and not Magic Block or Arcium)
+Full component specs, account layouts, the canonical verdict message, and the on-chain signature-verification pattern live in [`docs/BUILD_PLAN_v2.md`](docs/BUILD_PLAN_v2.md).
 
-I compared all three live Solana confidential-compute options before deciding:
+## Why AWS Nitro (and not Inco Lightning)
 
-| | Paradigm | Fit for "run arbitrary untrusted code confidentially" |
-|---|---|---|
-| **Inco Lightning** | TEE-based, general confidential computation, private data types + operations | **Best fit.** This is exactly its stated purpose — encrypted data stays encrypted *during computation*. Integrates directly with Anchor/Rust + a JS SDK. Has a beginner quickstart. |
-| **Magic Block** | TEE-based (Intel TDX), but framed around "Ephemeral Rollups" — delegating *accounts* to a temporary high-throughput execution environment, mainly for scaling | Weaker fit. Its core primitives (`delegate_account`, `commit_and_undelegate_accounts`) are built for moving on-chain *state* into a faster environment, not for "confidentially execute this arbitrary uploaded program." Privacy is a secondary use case for it, not the core design. |
-| **Arcium** | MPC-based (multi-party computation), flagship use cases are confidential DeFi (private swaps, lending) | Wrong paradigm. MPC is best for computing one *predefined* function over private inputs from multiple parties — not for running arbitrary, potentially adversarial, uploaded programs. TEEs are the standard fit for "run any code in a sealed box," which is what we need. |
+An earlier design (see `EXPLAIN.md`, pre-pivot history) used **Inco Lightning**. It was removed because it is the wrong primitive for this product:
 
-**Docs:** https://docs.inco.org/svm/home · beginner tutorial: https://solskills.sh/skills/inco
+- **Inco Lightning** provides *encrypted-data operations* — computing over ciphertext (e.g. equality over an encrypted integer). It cannot run arbitrary uploaded programs.
+- Real exploit verification means unpacking a rootfs, injecting a flag, and running an **`nsjail`-sandboxed target + attacker binary** — a full userspace Linux workload.
+- An **AWS Nitro Enclave** runs exactly that: a container rootfs + `nsjail` inside a hardware-isolated VM, producing a signed attestation. The on-chain interface is **signature-only**, so a later migration to Intel TDX / SEV-SNP (needed only for the kernel-exploit tier) changes pinned values, not program logic.
 
-## Detailed technical flow
+## Repository layout
 
-**On-chain (Solana / Anchor program) responsibilities:**
-- `create_bounty(test_suite_hash, prize_amount, deadline)` — buyer locks `prize_amount` into a PDA (Program Derived Address) acting as escrow. `test_suite_hash` commits to the public test suite so it can't be silently changed later.
-- `submit_solution(bounty_id, encrypted_submission_ref)` — solver pays the anti-spam fee (transferred into the program, non-refundable) and registers a reference/pointer to their encrypted submission (the ciphertext itself may live off-chain, e.g. via the Inco SDK's storage, with only a hash/reference on-chain).
-- `resolve_submission(bounty_id, submission_id, attestation)` — anyone (typically a relayer/cron, or the solver) can call this once the TEE has produced a result. The program **verifies the attestation's signature against Inco's known TEE public key** — this is the trust anchor: we don't trust the platform, we trust the hardware manufacturer's signing key, the same way a browser trusts a certificate authority.
-- If the verified attestation says PASS → transfer escrowed funds to the solver's wallet, mark bounty resolved, reveal the decrypted solution to the buyer.
-- If FAIL → no transfer, submission discarded, solver may retry (new fee).
+```
+programs/sealed-code-bounty/   # the on-chain Anchor program (escrow today; v2 evolves it)
+frontend/                      # React + Vite + wallet-adapter client
+tests/                         # ts-mocha integration tests (localnet)
+migrations/                    # Anchor deploy stub
+docs/BUILD_PLAN_v2.md          # authoritative v2 specification
+EXPLAIN.md                     # pre-pivot (v1) per-file history — historical only
+```
 
-**Off-chain / TEE (Inco Lightning) responsibilities:**
-- Provide the encryption primitives the solver's client uses before submission ever leaves their machine.
-- Decrypt and execute the submission **only inside the enclave**.
-- Run the buyer's test suite against it.
-- Produce a **remote attestation**: a signed report proving *which* code ran, *what* result it produced, and that it genuinely executed on unmodified, genuine TEE hardware — this signed report is what the Solana program checks in `resolve_submission`.
+## Build & test
 
-**Frontend responsibilities:**
-- Solana wallet connection (wallet-adapter).
-- Bounty creation form (buyer): description, test suite upload, prize amount.
-- Submission form (solver): code upload → client-side encryption via Inco's JS SDK → submit.
-- Status view: pending / passed / failed, payout confirmation.
+Solana/Anchor development is done on **Linux / WSL2** (native Windows is not supported for the toolchain).
 
-## MVP scope — what we're building first
+Prerequisites (in WSL2): [Rust](https://rustup.rs), the [Solana CLI](https://docs.solana.com/cli/install-solana-cli-tools), and [Anchor](https://www.anchor-lang.com/docs/installation) (via `avm`), plus Node ≥20.
 
-Full arbitrary security-exploit verification (sandboxing genuinely malicious, system-level code safely) is a much bigger and riskier engineering problem than we should take on for a first build. **For the demo, scope to Codeforces-style coding challenges**: buyer provides a function signature + input/output test cases, solver submits a function in one fixed language (pick Python or JavaScript — simplest to sandbox and test). This keeps the *verification harness* simple (run function, compare output to expected, no OS-level sandboxing concerns) while still proving the full confidential-submit → verify → auto-pay mechanism end-to-end. Real bug-bounty-grade exploit verification becomes the stated post-residency roadmap item, not something we need working by Demo Day.
+```bash
+# from the repo root, inside WSL2
+npm install
+anchor build
+anchor test            # spins up a throwaway local validator (localnet-first)
+```
 
-## Tools & environment setup
+`anchor test` runs on **localnet** by default — fast, deterministic, and free. An optional devnet smoke test is gated behind an env flag (`SCB_DEVNET=1`) and needs a funded devnet wallet.
 
-You'll need:
-- **Rust** + **Solana CLI** + **Anchor framework** — for the on-chain program
-- **Node.js** + **@solana/web3.js** + **@solana/wallet-adapter** — for the frontend
-- **Inco Lightning SDK** (Rust crate for the Anchor program side, JS SDK for client-side encryption) — https://docs.inco.org/svm/home
-- A **Solana devnet wallet** with devnet SOL (via `solana airdrop`)
-- Basic **React/Next.js** for the frontend (or plain HTML/JS if time is short — functionality over polish for the demo)
+## Current status vs. the plan
 
-## Build plan — step by step
+| Build phase (see `docs/BUILD_PLAN_v2.md` §5) | Status |
+|---|---|
+| 0. Cleanup — `v2` branch, Inco removed, localnet-first, README | **in progress** (this change) |
+| 1. Program v2 — Config / Bounty-v2 / Receipt / Reveal + `resolve_with_attestation` | not started |
+| 2. Packager CLI + manifest | not started |
+| 3. Verifier runner (plain container first) | not started |
+| 4. Wire runner ↔ program (relayer + real signatures) | not started |
+| 5–8. Dev plane, frontend v2, Nitro envelope, indexer | not started |
 
-1. **Environment setup** — install Rust, Solana CLI, Anchor, Node.js; create devnet wallet; get devnet SOL.
-2. **Bare-bones Anchor program, no confidentiality yet** — implement `create_bounty` (escrow PDA) and a plaintext `submit_solution` + manual `resolve` to prove the escrow/payout logic works in isolation, using devnet, before adding any TEE complexity.
-3. **Integrate Inco Lightning** — work through their quickstart, get a minimal "encrypt something, decrypt+compute inside the enclave, get an attestation back" example running standalone (outside our program) first.
-4. **Wire the TEE into the program** — replace the plaintext submission flow with the real encrypted-submit → TEE-execute → attestation-verify → payout flow.
-5. **Minimal frontend** — wallet connect, create-bounty form, submit-solution form, status display.
-6. **End-to-end test on devnet** — create a real coding-challenge bounty, submit a correct and an incorrect solution, confirm payout only happens on PASS and the incorrect solution is never exposed.
-7. **Demo polish** — pick one compelling example bounty to walk through live on Demo Day.
+What exists today is a **working SOL escrow program** with a manual (insecure-by-design) resolve and plaintext submissions — the money-movement scaffolding, proven by the tests in `tests/`. Everything that makes submissions *confidential and trustlessly verified* is the v2 work ahead.
 
-## Open risks / honest unknowns
+## §11 — Trust model (honest v1 disclosure)
 
-- **Inco Lightning is in beta** (launched devnet Jan 2026) — expect sparse docs/examples relative to mature tools, more trial-and-error than usual.
-- **Attestation verification on-chain** — need to confirm exactly how Inco's TEE public keys are distributed/checked from within an Anchor program; this is the crux of the trust model and needs to be validated early, not assumed.
-- **Submission storage** — encrypted submissions likely need to live off-chain (Solana account storage is expensive for arbitrary code blobs); need a storage approach (e.g. Arweave, or Inco's own storage primitives if provided) with only a hash/reference on-chain.
-- **Language sandboxing** — even for the simplified MVP (one language, function-based), confirm what the TEE execution environment actually supports before assuming it can run arbitrary user code out of the box.
+v1 is **trust-minimized, not trustless.** Be explicit about what users trust:
+
+- **The grader (enclave) image is open source with a reproducible build.** Its measurement (`PCR0`) is pinned on-chain in `Config`; only that exact image can produce accepted verdicts.
+- **Operator-key and config changes go through a multisig authority with a timelock**, so key swaps are visible and delayed, not silent.
+- **The real root of trust in v1 is the AWS account and KMS key policy.** The master secret `M` (from which per-bounty flags and the enclave keys are derived) is released by KMS only to an attestation carrying the pinned `PCR0`. That means whoever controls the AWS account / KMS policy — not any on-chain mechanism — can ultimately release `M` or bless different code. **This is the weakest link in v1** and is not constrained by the Solana multisig.
+- **Roadmap** decentralizes this: threshold k-of-n operator sets, staked operators with slashing, and eventually full on-chain attestation verification.
+
+Nothing here silently weakens the core guarantee: **failed exploits stay sealed, and payouts only follow a verified enclave verdict.**
