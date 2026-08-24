@@ -123,7 +123,7 @@ impl SandboxExecutor for DockerCli {
         let memory = format!("{}m", p.memory_mb);
         let cpus = format!("{}", p.cpus);
         let seed = p.seed.to_string();
-        let mut args: Vec<String> = vec![
+        let args: Vec<String> = vec![
             "run".into(),
             "--rm".into(),
             "--network".into(),
