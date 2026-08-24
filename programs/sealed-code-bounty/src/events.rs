@@ -16,6 +16,7 @@ pub struct OperatorSetChanged {
     pub operators: Vec<Pubkey>,
     pub threshold: u8,
     pub enclave_enc_pk: [u8; 32],
+    pub force_unlock_delay_s: i64,
 }
 
 #[event]

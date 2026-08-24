@@ -36,12 +36,14 @@ pub mod sealed_code_bounty {
         operators: Vec<Pubkey>,
         threshold: u8,
         enclave_enc_pk: [u8; 32],
+        force_unlock_delay_s: i64,
     ) -> Result<()> {
         crate::instructions::set_operators::handle_set_operators(
             ctx,
             operators,
             threshold,
             enclave_enc_pk,
+            force_unlock_delay_s,
         )
     }
 

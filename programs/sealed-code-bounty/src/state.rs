@@ -49,6 +49,10 @@ pub struct Config {
     pub enclave_enc_pk: [u8; 32],
     /// Refundable anti-spam bond per submission (D10).
     pub submission_bond_lamports: u64,
+    /// Seconds a submission must sit unresolved before permissionless
+    /// `force_unlock_submission` may fire. Lives in Config (was a constant)
+    /// so tests can shrink it and ops can tune it without redeploying.
+    pub force_unlock_delay_s: i64,
     pub bump: u8,
 }
 

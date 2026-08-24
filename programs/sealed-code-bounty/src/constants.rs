@@ -25,7 +25,13 @@ pub const MAX_OPERATORS: usize = 10;
 pub const MAX_BLOB_URL_LEN: usize = 200;
 
 /// Inline `Reveal.ciphertext` cap (bytes) for a libsodium sealed box.
-pub const MAX_CIPHERTEXT_LEN: usize = 10_240;
+///
+/// Hard ceiling rationale: an account CREATED BY CPI (init_if_needed inside
+/// our instruction) may hold at most 10_240 bytes of data. Reveal totals
+/// 8 (discriminator) + 4 + CIPHERTEXT + 4 + 200 (url) + 32 (sha256), so the
+/// inline payload must stay <= ~9.7 KB. Larger exploits use the URL fallback
+/// path (same sealed-box scheme, blob off-chain) — BUILD_PLAN_v2.md §4.1/D9.
+pub const MAX_CIPHERTEXT_LEN: usize = 9_700;
 
 /// Seconds a submission may sit in `AwaitingResolution` before anyone may call
 /// `force_unlock_submission`. A hostile/silent relayer can only delay a bounty,

@@ -28,7 +28,9 @@ pub fn handle_set_operators(
     operators: Vec<Pubkey>,
     threshold: u8,
     enclave_enc_pk: [u8; 32],
+    force_unlock_delay_s: i64,
 ) -> Result<()> {
+    require!(force_unlock_delay_s > 0, ErrorCode::InvalidForceUnlockDelay);
     require!(!operators.is_empty(), ErrorCode::InvalidOperators);
     require!(operators.len() <= MAX_OPERATORS, ErrorCode::InvalidOperators);
     for i in 0..operators.len() {
@@ -46,11 +48,13 @@ pub fn handle_set_operators(
     config.operators = operators.clone();
     config.threshold = threshold;
     config.enclave_enc_pk = enclave_enc_pk;
+    config.force_unlock_delay_s = force_unlock_delay_s;
 
     emit!(OperatorSetChanged {
         operators,
         threshold,
         enclave_enc_pk,
+        force_unlock_delay_s,
     });
 
     msg!(

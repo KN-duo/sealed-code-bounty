@@ -40,6 +40,8 @@ pub enum ErrorCode {
     MissingPayoutAccounts,
     #[msg("Force unlock delay has not elapsed yet")]
     ForceUnlockTooEarly,
+    #[msg("Force unlock delay must be greater than zero")]
+    InvalidForceUnlockDelay,
     #[msg("Escrow balance insufficient for payout + bond refund")]
     EscrowInsufficient,
     #[msg("Bounty deadline has not passed yet")]

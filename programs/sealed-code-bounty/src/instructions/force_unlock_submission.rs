@@ -4,11 +4,11 @@ use crate::{
     constants::*,
     error::ErrorCode,
     events::SubmissionUnlocked,
-    state::Bounty,
+    state::{Bounty, Config},
 };
 
 // Anti-censorship escape hatch (review P0-4): if the relayer sits on a verdict
-// (or vanishes), ANYONE may unlock the bounty once FORCE_UNLOCK_DELAY_S has
+// (or vanishes), ANYONE may unlock the bounty once Config.force_unlock_delay_s
 // passed since submission. The bond is refunded to the solver and the slot is
 // wiped, so a hostile/silent relayer can only delay a bounty, never lock its
 // prize.
@@ -24,6 +24,8 @@ pub struct ForceUnlockSubmission<'info> {
         bump = bounty.bump,
     )]
     pub bounty: Account<'info, Bounty>,
+    #[account(seeds = [CONFIG_SEED], bump = config.bump)]
+    pub config: Account<'info, Config>,
     /// CHECK: bond refund destination — must equal
     /// `current_submission.solver`; enforced in the handler.
     #[account(mut)]
@@ -49,7 +51,7 @@ pub fn handle_force_unlock_submission(
         ErrorCode::SolverMismatch
     );
     require!(
-        now >= submission.submitted_at.saturating_add(FORCE_UNLOCK_DELAY_S),
+        now >= submission.submitted_at.saturating_add(ctx.accounts.config.force_unlock_delay_s),
         ErrorCode::ForceUnlockTooEarly
     );
 

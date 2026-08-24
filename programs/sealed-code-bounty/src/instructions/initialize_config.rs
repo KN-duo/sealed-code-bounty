@@ -1,6 +1,10 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::CONFIG_SEED, events::ConfigInitialized, state::Config};
+use crate::{
+    constants::{CONFIG_SEED, FORCE_UNLOCK_DELAY_S},
+    events::ConfigInitialized,
+    state::Config,
+};
 
 // One-time protocol bootstrap. The operator key set itself is pinned
 // afterwards via set_operators once the enclave's attested ed25519 key has
@@ -33,6 +37,7 @@ pub fn handle_initialize_config(
     config.threshold = 0;
     config.enclave_enc_pk = enclave_enc_pk;
     config.submission_bond_lamports = submission_bond_lamports;
+    config.force_unlock_delay_s = FORCE_UNLOCK_DELAY_S;
     config.bump = ctx.bumps.config;
 
     emit!(ConfigInitialized {

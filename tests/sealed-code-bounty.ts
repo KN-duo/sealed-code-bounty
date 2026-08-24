@@ -1,237 +1,712 @@
 import * as anchor from "@anchor-lang/core";
-import { Program } from "@anchor-lang/core";
+import { Program, BN } from "@anchor-lang/core";
 import { SealedCodeBounty } from "../target/types/sealed_code_bounty";
 import { assert } from "chai";
+import * as nacl from "tweetnacl";
 import * as crypto from "crypto";
 import * as fs from "fs";
 import * as path from "path";
 
-describe("sealed-code-bounty", () => {
+/**
+ * v2 test suite (phase 1, task 2).
+ *
+ * Covers the full program surface on localnet:
+ *   config bootstrap + operator rotation bounds
+ *   create_bounty escrow economics
+ *   submit_exploit bond + slot serialization + deadline guard
+ *   resolve_with_attestation PASS (real SCB_VERDICT_V3 bytes, real ed25519
+ *     signature over the exact 175-byte wire, native Ed25519SigVerify
+ *     instruction composed atomically with the resolution) and FAIL
+ *   verdict-binding negatives (exploit/env/flag/operator/missing-ix)
+ *   force_unlock_submission (too-early reject + delayed unlock)
+ *   cancel_expired_bounty (unchanged v1 semantics)
+ */
+
+const ED25519_PROGRAM_ID = new anchor.web3.PublicKey(
+  "Ed25519SigVerify111111111111111111111111111"
+);
+const INSTRUCTIONS_SYSVAR_ID = new anchor.web3.PublicKey(
+  "Sysvar1nstructions1111111111111111111111111"
+);
+const VERDICT_TAG = Buffer.from("SCB_VERDICT_V3", "ascii");
+const VERDICT_MSG_LEN = 175;
+
+const PRIZE_LAMPORTS = 1 * anchor.web3.LAMPORTS_PER_SOL;
+const BOND_LAMPORTS = 0.05 * anchor.web3.LAMPORTS_PER_SOL;
+const DEFAULT_UNLOCK_DELAY_S = 3600;
+const FUND_SOL = 10;
+
+// Deterministic 32-byte filler hashes; contents don't matter to the program,
+// only that they match across create -> submit -> verdict.
+const ENC_PK = Buffer.alloc(32, 9);
+const MANIFEST_HASH = Buffer.alloc(32, 1);
+const ENV_HASH = Buffer.alloc(32, 2);
+const EXPLOIT_HASH = Buffer.alloc(32, 3);
+const FLAG_COMMITMENT = Buffer.alloc(32, 4);
+const CIPHERTEXT = Buffer.from("sealed-box-ciphertext-bytes");
+const CIPHERTEXT_SHA = crypto.createHash("sha256").update(CIPHERTEXT).digest();
+
+describe("sealed-code-bounty v2", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
-
   const program = anchor.workspace.sealedCodeBounty as Program<SealedCodeBounty>;
+  const connection = provider.connection;
 
-  // Devnet SOL is scarce (airdrop faucet is heavily rate-limited), so test
-  // wallets are persisted across runs instead of freshly generated each time
-  // — a fresh `Keypair.generate()` every run permanently strands whatever
-  // it's funded with, since nothing ever sends it back.
-  const KEYS_DIR = path.join(__dirname, ".keys");
-  function loadOrCreateKeypair(name: string): anchor.web3.Keypair {
-    fs.mkdirSync(KEYS_DIR, { recursive: true });
-    const file = path.join(KEYS_DIR, `${name}.json`);
-    if (fs.existsSync(file)) {
-      const secret = Uint8Array.from(JSON.parse(fs.readFileSync(file, "utf8")));
-      return anchor.web3.Keypair.fromSecretKey(secret);
-    }
-    const kp = anchor.web3.Keypair.generate();
-    fs.writeFileSync(file, JSON.stringify(Array.from(kp.secretKey)));
-    return kp;
+  // Localnet: fresh ledgers every run, so fresh keypairs are safe and we
+  // airdrop instead of persisting wallets (the old devnet trick is gone).
+  const payer = provider.wallet.payer;
+  const buyer = anchor.web3.Keypair.generate();
+  const solver = anchor.web3.Keypair.generate();
+  const relayer = anchor.web3.Keypair.generate();
+  const operator = anchor.web3.Keypair.generate(); // test enclave signing key
+
+  const idlErrors: Record<string, number> = {};
+  for (const e of require("../target/idl/sealed_code_bounty.json").errors ?? []) {
+    idlErrors[e.name] = e.code;
   }
 
-  const buyer = loadOrCreateKeypair("buyer");
-  const solver = loadOrCreateKeypair("solver");
+  const configPda = anchor.web3.PublicKey.findProgramAddressSync(
+    [Buffer.from("config")],
+    program.programId
+  )[0];
 
-  // Kept modest on purpose: every run permanently locks bounty #2's and #3's
-  // prize (never resolved/cancelled in these tests), so a smaller amount
-  // keeps repeated test runs sustainable against a scarce devnet balance.
-  const PRIZE_LAMPORTS = 0.05 * anchor.web3.LAMPORTS_PER_SOL;
-
-  // Bounty IDs derived from the current time so a persistent buyer never
-  // collides with a bounty PDA it already created (and left unresolved) in
-  // an earlier run.
-  const RUN_ID = new anchor.BN(Date.now());
-
-  function bountyPda(buyerKey: anchor.web3.PublicKey, bountyId: anchor.BN) {
+  function bountyPda(buyerKey: anchor.web3.PublicKey, bountyId: number) {
     return anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("bounty"), buyerKey.toBuffer(), bountyId.toArrayLike(Buffer, "le", 8)],
+      [
+        Buffer.from("bounty"),
+        buyerKey.toBuffer(),
+        new BN(bountyId).toArrayLike(Buffer, "le", 8),
+      ],
+      program.programId
+    )[0];
+  }
+  function receiptPda(bountyKey: anchor.web3.PublicKey) {
+    return anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("receipt"), bountyKey.toBuffer(), solver.publicKey.toBuffer()],
+      program.programId
+    )[0];
+  }
+  function revealPda(bountyKey: anchor.web3.PublicKey) {
+    return anchor.web3.PublicKey.findProgramAddressSync(
+      [Buffer.from("reveal"), bountyKey.toBuffer()],
       program.programId
     )[0];
   }
 
-  // Tops a persistent test wallet up to `targetSol` only if it's currently
-  // below that — avoids re-funding (and stranding more SOL) on every rerun
-  // once the wallet already has enough from a previous run.
-  async function fundIfLow(pubkey: anchor.web3.PublicKey, targetSol: number) {
-    const targetLamports = targetSol * anchor.web3.LAMPORTS_PER_SOL;
-    const current = await provider.connection.getBalance(pubkey);
-    if (current >= targetLamports) return;
+  const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+  const CLOCK_SYSVAR = new anchor.web3.PublicKey(
+    "SysvarC1ock11111111111111111111111111111111"
+  );
+
+  /**
+   * Chain-clock time, read straight from the Clock sysvar account — the exact
+   * value Clock::get() hands the program. getBlockTime proved unreliable on
+   * test-validator (stale timestamps), and wall time can diverge from chain
+   * time by seconds, breaking sub-10s deadlines.
+   */
+  async function chainNow(): Promise<number> {
+    const info = await connection.getAccountInfo(CLOCK_SYSVAR);
+    if (!info || info.data.length < 40) return Math.floor(Date.now() / 1000);
+    // Agave Clock layout (borsh order):
+    //   slot(0) · epoch_start_timestamp(8) · epoch(16) ·
+    //   leader_schedule_epoch(24) · unix_timestamp(32)
+    return Number(info.data.readBigInt64LE(32));
+  }
+
+  /**
+   * The local validator's Clock::unix_timestamp tracks its SLOT count and
+   * advances burstily (frozen while idle, then leaping). Waiting passively is
+   * therefore unbounded — so we nudge consensus with 1-lamport transfers,
+   * each of which lands in a fresh slot and pushes chain time forward.
+   */
+  async function pokeSlot() {
     const tx = new anchor.web3.Transaction().add(
       anchor.web3.SystemProgram.transfer({
-        fromPubkey: provider.wallet.publicKey,
-        toPubkey: pubkey,
-        lamports: targetLamports - current,
+        fromPubkey: relayer.publicKey,
+        toPubkey: payer.publicKey,
+        lamports: 1,
       })
     );
-    const sig = await provider.sendAndConfirm(tx);
-    await provider.connection.confirmTransaction(sig, "confirmed");
+    await provider.sendAndConfirm(tx, [relayer]);
   }
 
-  // Waits until the on-chain Clock actually passes `targetUnix`. A fresh local
-  // validator advances its clock from slots and can lag wall-clock time, so a
-  // fixed setTimeout is flaky; poll block time instead of trusting Date.now().
-  async function waitUntilOnChainTime(targetUnix: number, maxWaitMs = 30000) {
+  /** Polls until the chain clock passes `ts`, poking slots while stuck. */
+  async function waitUntilChainPast(ts: number, maxMs = 60000) {
     const start = Date.now();
-    while (Date.now() - start < maxWaitMs) {
-      const slot = await provider.connection.getSlot();
-      const t = await provider.connection.getBlockTime(slot);
-      if (t !== null && t > targetUnix) return;
-      await new Promise((r) => setTimeout(r, 500));
+    let lastPoke = 0;
+    while ((await chainNow()) <= ts) {
+      if (Date.now() - start > maxMs)
+        throw new Error(`chain clock never passed ${ts}`);
+      if (Date.now() - lastPoke > 250) {
+        await pokeSlot().catch(() => {});
+        lastPoke = Date.now();
+      }
+      await sleep(150);
     }
-    throw new Error("on-chain clock did not pass the deadline within maxWaitMs");
   }
 
-  async function createBounty(bountyId: anchor.BN, deadlineOffsetSeconds = 3600, prizeLamports = PRIZE_LAMPORTS) {
-    const testSuiteHash = crypto.createHash("sha256").update(`suite-${bountyId}`).digest();
-    const deadline = new anchor.BN(Math.floor(Date.now() / 1000) + deadlineOffsetSeconds);
-    const bounty = bountyPda(buyer.publicKey, bountyId);
+  /**
+   * Blocks until the CHAIN clock is strictly past `bountyKey`'s deadline.
+   * Sleeping against wall time is racy: the validator's Clock::get can lag
+   * wall time by seconds, so short deadlines must be awaited on-chain.
+   */
+  async function waitUntilExpired(bountyKey: anchor.web3.PublicKey, maxMs = 30000) {
+    const b = await program.account.bounty.fetch(bountyKey);
+    await waitUntilChainPast(b.deadline.toNumber(), maxMs);
+  }
 
-    await program.methods
-      .createBounty(bountyId, Array.from(testSuiteHash), new anchor.BN(prizeLamports), deadline)
-      .accountsPartial({
+  async function balance(pk: anchor.web3.PublicKey) {
+    return connection.getBalance(pk);
+  }
+
+  async function expectError(p: Promise<any>, name: string) {
+    try {
+      await p;
+    } catch (e: any) {
+      const got =
+        e?.error?.errorCode?.number ??
+        e?.error?.error?.code?.number ??
+        (() => {
+          // Simulation failures surface AnchorErrors only as log lines:
+          // "... Error Code: X. Error Number: N. Error Message: ..."
+          const m = String(e?.message ?? "").match(/Error Number: (\d+)/);
+          return m ? Number(m[1]) : null;
+        })();
+      if (got === idlErrors[name]) return;
+      // Surface unexpected failures with full context.
+      throw new Error(
+        `expected ${name} (${idlErrors[name]}), got ${JSON.stringify({
+          got,
+          msg: String(e?.message ?? e).slice(0, 300),
+        })}`
+      );
+    }
+    throw new Error(`expected tx to fail with ${name}, but it succeeded`);
+  }
+
+  async function createBounty(
+    bountyId: number,
+    opts: { prize?: BN; deadlineOffsetS?: number } = {}
+  ) {
+    const cn = await chainNow();
+    const deadline = new BN(cn).addn(opts.deadlineOffsetS ?? 3600);
+    return program.methods
+      .createBounty(
+        new BN(bountyId),
+        opts.prize ?? new BN(PRIZE_LAMPORTS),
+        deadline,
+        [...MANIFEST_HASH],
+        [...ENV_HASH],
+        [...FLAG_COMMITMENT],
+        [...ENC_PK]
+      )
+      .accountsStrict({
         buyer: buyer.publicKey,
-        bounty,
+        config: configPda,
+        bounty: bountyPda(buyer.publicKey, bountyId),
         systemProgram: anchor.web3.SystemProgram.programId,
       })
       .signers([buyer])
       .rpc();
-
-    return bounty;
   }
 
-  async function submitSolution(bountyId: anchor.BN, bounty: anchor.web3.PublicKey, solution: string) {
-    await program.methods
-      .submitSolution(bountyId, solution)
-      .accountsPartial({
-        solver: solver.publicKey,
-        bounty,
-        buyer: buyer.publicKey,
+  async function submitExploit(bountyId: number, who = solver) {
+    return program.methods
+      .submitExploit(new BN(bountyId), `https://blob.example/${bountyId}`, [
+        ...EXPLOIT_HASH,
+      ])
+      .accountsStrict({
+        solver: who.publicKey,
+        config: configPda,
+        bounty: bountyPda(buyer.publicKey, bountyId),
         systemProgram: anchor.web3.SystemProgram.programId,
       })
-      .signers([solver])
+      .signers([who])
       .rpc();
+  }
+
+  /** Canonical SCB_VERDICT_V3 wire — must mirror constants.rs exactly. */
+  function buildVerdictMessage(
+    bountyKey: anchor.web3.PublicKey,
+    envHash: Buffer,
+    exploitHash: Buffer,
+    solverPk: Buffer,
+    flagCommitment: Buffer,
+    outcome: boolean
+  ) {
+    return Buffer.concat([
+      VERDICT_TAG,
+      bountyKey.toBuffer(),
+      envHash,
+      exploitHash,
+      solverPk,
+      flagCommitment,
+      Buffer.from([outcome ? 1 : 0]),
+    ]);
+  }
+
+  interface ResolveOpts {
+    bountyId: number;
+    outcome: boolean;
+    operatorKp?: anchor.web3.Keypair;
+    envHash?: Buffer;
+    exploitHash?: Buffer;
+    flagCommitment?: Buffer;
+    ciphertext?: Buffer;
+    ciphertextUrl?: string;
+    ciphertextSha?: Buffer;
+    includeEd25519Ix?: boolean;
+  }
+
+  /**
+   * Composes [Ed25519SigVerify, resolve_with_attestation] into ONE atomic
+   * transaction and lands it from the permissionless relayer.
+   */
+  async function resolve(opts: ResolveOpts) {
+    const {
+      bountyId,
+      outcome,
+      operatorKp = operator,
+      envHash = ENV_HASH,
+      exploitHash = EXPLOIT_HASH,
+      flagCommitment = FLAG_COMMITMENT,
+      ciphertext = CIPHERTEXT,
+      ciphertextUrl = "",
+      ciphertextSha = CIPHERTEXT_SHA,
+      includeEd25519Ix = true,
+    } = opts;
+
+    const bountyKey = bountyPda(buyer.publicKey, bountyId);
+    const message = buildVerdictMessage(
+      bountyKey,
+      envHash,
+      exploitHash,
+      solver.publicKey.toBuffer(),
+      flagCommitment,
+      outcome
+    );
+    assert.equal(message.length, VERDICT_MSG_LEN);
+
+    const signature = nacl.sign.detached(message, operatorKp.secretKey);
+    const ed25519Ix = anchor.web3.Ed25519Program.createInstructionWithPublicKey({
+      publicKey: operatorKp.publicKey.toBytes(),
+      signature,
+      message,
+    });
+
+    const resolveIx = await program.methods
+      .resolveWithAttestation(
+        new BN(bountyId),
+        outcome,
+        outcome ? Buffer.from(ciphertext) : Buffer.alloc(0),
+        outcome ? ciphertextUrl : "",
+        Buffer.from(ciphertextSha)
+      )
+      .accountsStrict({
+        relayer: relayer.publicKey,
+        config: configPda,
+        bounty: bountyKey,
+        solver: solver.publicKey,
+        receipt: outcome ? receiptPda(bountyKey) : null,
+        reveal: outcome ? revealPda(bountyKey) : null,
+        ed25519Program: ED25519_PROGRAM_ID,
+        instructions: INSTRUCTIONS_SYSVAR_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .instruction();
+
+    const tx = new anchor.web3.Transaction();
+    if (includeEd25519Ix) tx.add(ed25519Ix);
+    tx.add(resolveIx);
+    return provider.sendAndConfirm(tx, [relayer]);
   }
 
   before(async () => {
-    // Targets cover this run's worst case (two 0.05-SOL prizes + two small
-    // cancel-test prizes + rent/fees) with headroom; fundIfLow only tops up
-    // the shortfall, so reruns that already have enough spend nothing.
-    await fundIfLow(buyer.publicKey, 0.3);
-    await fundIfLow(solver.publicKey, 0.05);
-  });
-
-  it("escrows the prize on create, and releases it to the solver on PASS", async () => {
-    const bountyId = RUN_ID;
-    const bounty = await createBounty(bountyId);
-
-    const bountyAfterCreate = await program.account.bounty.fetch(bounty);
-    assert.equal(bountyAfterCreate.prizeAmount.toNumber(), PRIZE_LAMPORTS);
-    assert.equal(bountyAfterCreate.submitted, false);
-    assert.equal(bountyAfterCreate.resolved, false);
-
-    await submitSolution(bountyId, bounty, "def solve(x): return x * 2");
-
-    const bountyAfterSubmit = await program.account.bounty.fetch(bounty);
-    assert.equal(bountyAfterSubmit.submitted, true);
-    assert.equal(bountyAfterSubmit.solver.toBase58(), solver.publicKey.toBase58());
-    assert.equal(bountyAfterSubmit.solution, "def solve(x): return x * 2");
-
-    const solverBalanceBeforeResolve = await provider.connection.getBalance(solver.publicKey);
-
-    await program.methods
-      .resolveSubmission(bountyId, true)
-      .accountsPartial({
-        buyer: buyer.publicKey,
-        bounty,
-        solver: solver.publicKey,
-      })
-      .signers([buyer])
-      .rpc();
-
-    const solverBalanceAfterResolve = await provider.connection.getBalance(solver.publicKey);
-    assert.equal(solverBalanceAfterResolve - solverBalanceBeforeResolve, PRIZE_LAMPORTS);
-
-    const bountyAfterResolve = await program.account.bounty.fetch(bounty);
-    assert.equal(bountyAfterResolve.resolved, true);
-  });
-
-  it("keeps the prize locked on FAIL, discards the submission, and allows a retry", async () => {
-    const bountyId = RUN_ID.addn(1);
-    const bounty = await createBounty(bountyId);
-
-    await submitSolution(bountyId, bounty, "def solve(x): return x - 1  # wrong");
-
-    const bountyPdaBalanceBeforeResolve = await provider.connection.getBalance(bounty);
-
-    await program.methods
-      .resolveSubmission(bountyId, false)
-      .accountsPartial({
-        buyer: buyer.publicKey,
-        bounty,
-        solver: solver.publicKey,
-      })
-      .signers([buyer])
-      .rpc();
-
-    const bountyPdaBalanceAfterResolve = await provider.connection.getBalance(bounty);
-    assert.equal(bountyPdaBalanceAfterResolve, bountyPdaBalanceBeforeResolve);
-
-    const bountyAfterFail = await program.account.bounty.fetch(bounty);
-    assert.equal(bountyAfterFail.submitted, false);
-    assert.equal(bountyAfterFail.resolved, false);
-    assert.isNull(bountyAfterFail.solver);
-    assert.equal(bountyAfterFail.solution, "");
-
-    await submitSolution(bountyId, bounty, "def solve(x): return x + 1  # correct this time");
-
-    const bountyAfterRetry = await program.account.bounty.fetch(bounty);
-    assert.equal(bountyAfterRetry.submitted, true);
-    assert.equal(bountyAfterRetry.solution, "def solve(x): return x + 1  # correct this time");
-  });
-
-  const SMALL_PRIZE_LAMPORTS = 0.01 * anchor.web3.LAMPORTS_PER_SOL; // cancel tests only exercise the deadline logic, not money amounts — no need to lock a full SOL
-
-  it("refuses to cancel a bounty before its deadline has passed", async () => {
-    const bountyId = RUN_ID.addn(2);
-    const bounty = await createBounty(bountyId, 3600, SMALL_PRIZE_LAMPORTS); // default 1-hour deadline, still in the future
-
-    try {
-      await program.methods
-        .cancelExpiredBounty(bountyId)
-        .accountsPartial({ buyer: buyer.publicKey, bounty })
-        .signers([buyer])
-        .rpc();
-      assert.fail("expected cancel_expired_bounty to reject an unexpired bounty");
-    } catch (err) {
-      assert.include(err.toString(), "NotExpiredYet");
+    for (const kp of [buyer, solver, relayer]) {
+      await connection.requestAirdrop(kp.publicKey, FUND_SOL * anchor.web3.LAMPORTS_PER_SOL);
     }
+    // Faucet confirmations are lazy on localnet; poll until visible.
+    for (const kp of [buyer, solver, relayer]) {
+      for (let i = 0; i < 50; i++) {
+        if ((await balance(kp.publicKey)) >= FUND_SOL / 2 * anchor.web3.LAMPORTS_PER_SOL) break;
+        await sleep(200);
+      }
+    }
+
+    await program.methods
+      .initializeConfig(payer.publicKey, [...ENC_PK], new BN(BOND_LAMPORTS))
+      .accountsStrict({
+        payer: payer.publicKey,
+        config: configPda,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .rpc();
+
   });
 
-  it("refunds prize + rent to the buyer once an unsubmitted bounty expires", async () => {
-    const bountyId = RUN_ID.addn(3);
-    const bounty = await createBounty(bountyId, 2, SMALL_PRIZE_LAMPORTS); // expires in 2 seconds, nobody submits
+  // ---------------------------------------------------------------------
+  it("(1) initialize_config wrote the expected defaults", async () => {
+    const c = await program.account.config.fetch(configPda);
+    assert.ok(c.platformAuthority.equals(payer.publicKey));
+    assert.deepEqual(c.operators, []);
+    assert.equal(c.threshold, 0);
+    assert.equal(c.submissionBondLamports.toNumber(), BOND_LAMPORTS);
+    assert.equal(c.forceUnlockDelayS.toNumber(), DEFAULT_UNLOCK_DELAY_S);
+    assert.deepEqual(Buffer.from(c.enclaveEncPk), ENC_PK);
+  });
 
-    // Poll the on-chain clock past the deadline instead of a fixed wall-clock sleep.
-    const created = await program.account.bounty.fetch(bounty);
-    await waitUntilOnChainTime(created.deadline.toNumber());
+  it("(1a) set_operators rejects threshold=0", async () => {
+    await expectError(
+      program.methods
+        .setOperators([operator.publicKey], 0, [...ENC_PK], new BN(DEFAULT_UNLOCK_DELAY_S))
+        .accountsStrict({ authority: payer.publicKey, config: configPda })
+        .rpc(),
+      "BadThreshold"
+    );
+  });
 
-    const buyerBalanceBeforeCancel = await provider.connection.getBalance(buyer.publicKey);
-    const bountyBalanceBeforeCancel = await provider.connection.getBalance(bounty);
+  it("(1b) set_operators rejects threshold > operators.len()", async () => {
+    await expectError(
+      program.methods
+        .setOperators([operator.publicKey], 2, [...ENC_PK], new BN(DEFAULT_UNLOCK_DELAY_S))
+        .accountsStrict({ authority: payer.publicKey, config: configPda })
+        .rpc(),
+      "BadThreshold"
+    );
+  });
 
-    const sig = await program.methods
-      .cancelExpiredBounty(bountyId)
-      .accountsPartial({ buyer: buyer.publicKey, bounty })
+  it("(1c) set_operators rejects duplicate operators", async () => {
+    await expectError(
+      program.methods
+        .setOperators(
+          [operator.publicKey, operator.publicKey],
+          1,
+          [...ENC_PK],
+          new BN(DEFAULT_UNLOCK_DELAY_S)
+        )
+        .accountsStrict({ authority: payer.publicKey, config: configPda })
+        .rpc(),
+      "InvalidOperators"
+    );
+  });
+
+  it("(1d) set_operators rejects zero unlock delay", async () => {
+    await expectError(
+      program.methods
+        .setOperators([operator.publicKey], 1, [...ENC_PK], new BN(0))
+        .accountsStrict({ authority: payer.publicKey, config: configPda })
+        .rpc(),
+      "InvalidForceUnlockDelay"
+    );
+  });
+
+  it("(1e) set_operators update works and arms the trust root", async () => {
+    // Rotation to a 2-of-2 style set, back down to launch posture (n=1).
+    const second = anchor.web3.Keypair.generate().publicKey;
+    await program.methods
+      .setOperators(
+        [operator.publicKey, second],
+        1,
+        [...ENC_PK],
+        new BN(DEFAULT_UNLOCK_DELAY_S)
+      )
+      .accountsStrict({ authority: payer.publicKey, config: configPda })
+      .rpc();
+    let c = await program.account.config.fetch(configPda);
+    assert.equal(c.operators.length, 2);
+    assert.equal(c.threshold, 1);
+
+    await program.methods
+      .setOperators([operator.publicKey], 1, [...ENC_PK], new BN(DEFAULT_UNLOCK_DELAY_S))
+      .accountsStrict({ authority: payer.publicKey, config: configPda })
+      .rpc();
+    c = await program.account.config.fetch(configPda);
+    assert.equal(c.operators.length, 1);
+    assert.ok(c.operators[0].equals(operator.publicKey));
+    // From here on every resolve test can sign as `operator`.
+  });
+
+  // ---------------------------------------------------------------------
+  let nextBountyId = 100;
+
+  it("(2) create_bounty escrows the prize into the PDA", async () => {
+    const id = nextBountyId++;
+    const pda = bountyPda(buyer.publicKey, id);
+    const before = await balance(buyer.publicKey);
+    await createBounty(id);
+    const after = await balance(buyer.publicKey);
+
+    const b = await program.account.bounty.fetch(pda);
+    assert.ok(b.buyer.equals(buyer.publicKey));
+    assert.deepEqual(b.status, { open: {} });
+    assert.equal(b.prizeLamports.toNumber(), PRIZE_LAMPORTS);
+    assert.isNull(b.currentSubmission);
+    assert.isNull(b.winner);
+    assert.deepEqual(Buffer.from(b.envBlobSha256), ENV_HASH);
+    assert.deepEqual(Buffer.from(b.flagCommitment), FLAG_COMMITMENT);
+    // Buyer paid prize + rent + fees; escrow PDA holds at least the prize.
+    assert.isAtMost(after, before - PRIZE_LAMPORTS);
+    assert.isAtLeast((await balance(pda)), PRIZE_LAMPORTS);
+  });
+
+  it("(2a) create_bounty rejects zero prize", async () => {
+    const id = nextBountyId++;
+    await expectError(
+      createBounty(id, { prize: new BN(0) }),
+      "InvalidPrizeAmount"
+    );
+  });
+
+  it("(2b) create_bounty rejects past deadline", async () => {
+    const id = nextBountyId++;
+    await expectError(
+      createBounty(id, { deadlineOffsetS: -60 }),
+      "InvalidDeadline"
+    );
+  });
+
+  // ---------------------------------------------------------------------
+  it("(3) submit_exploit posts the bond and claims the slot", async () => {
+    const id = nextBountyId++;
+    await createBounty(id);
+    const pda = bountyPda(buyer.publicKey, id);
+    const before = await balance(solver.publicKey);
+    await submitExploit(id);
+    const after = await balance(solver.publicKey);
+
+    assert.equal(before - after, BOND_LAMPORTS); // bond moved in exactly
+    const b = await program.account.bounty.fetch(pda);
+    assert.deepEqual(b.status, { awaitingResolution: {} });
+    assert.isNotNull(b.currentSubmission);
+    assert.ok((b.currentSubmission! as any).solver.equals(solver.publicKey));
+    assert.equal(
+      (b.currentSubmission! as any).bondLamports.toNumber(),
+      BOND_LAMPORTS
+    );
+    assert.deepEqual(
+      Buffer.from((b.currentSubmission! as any).exploitSha256),
+      EXPLOIT_HASH
+    );
+  });
+
+  it("(3a) submit_exploit reverts while slot is claimed", async () => {
+    const id = nextBountyId++;
+    await createBounty(id);
+    await submitExploit(id);
+    await expectError(submitExploit(id), "NotOpen");
+  });
+
+  it("(3b) submit_exploit reverts after deadline", async () => {
+    const id = nextBountyId++;
+    await createBounty(id, { deadlineOffsetS: 2 });
+    await waitUntilExpired(bountyPda(buyer.publicKey, id));
+    await expectError(submitExploit(id), "DeadlinePassed");
+  });
+
+  // ---------------------------------------------------------------------
+  it("(4) resolve PASS pays prize+bond atomically and writes Receipt+Reveal", async () => {
+    const id = nextBountyId++;
+    await createBounty(id);
+    await submitExploit(id);
+
+    const bountyKey = bountyPda(buyer.publicKey, id);
+    const solverBefore = await balance(solver.publicKey);
+
+    await resolve({ bountyId: id, outcome: true });
+
+    const solverAfter = await balance(solver.publicKey);
+    assert.equal(solverAfter - solverBefore, PRIZE_LAMPORTS + BOND_LAMPORTS);
+
+    const b = await program.account.bounty.fetch(bountyKey);
+    assert.deepEqual(b.status, { resolved: {} });
+    assert.ok(b.winner!.equals(solver.publicKey));
+    assert.isNull(b.currentSubmission);
+
+    const r = await program.account.receipt.fetch(receiptPda(bountyKey));
+    assert.ok(r.solver.equals(solver.publicKey));
+    assert.ok(r.bounty.equals(bountyKey));
+    assert.deepEqual(Buffer.from(r.exploitSha256), EXPLOIT_HASH);
+    assert.isTrue(r.firstBlood);
+
+    const rev = await program.account.reveal.fetch(revealPda(bountyKey));
+    assert.deepEqual(Buffer.from(rev.ciphertext), CIPHERTEXT);
+    assert.deepEqual(Buffer.from(rev.ciphertextSha256), CIPHERTEXT_SHA);
+    assert.equal(rev.ciphertextUrl, "");
+  });
+
+  it("(4a) second resolve on a Resolved bounty rejects", async () => {
+    const id = nextBountyId - 1; // the bounty resolved above
+    await expectError(resolve({ bountyId: id, outcome: true }), "NotAwaitingResolution");
+  });
+
+  // ---------------------------------------------------------------------
+  // Negatives share one pending submission; none of them mutate state.
+  let negBountyId = 0;
+  before(async () => {
+    negBountyId = nextBountyId++;
+    await createBounty(negBountyId);
+    await submitExploit(negBountyId);
+  });
+
+  it("(5a) verdict binding wrong exploit_sha256 fails", async () => {
+    const bad = Buffer.alloc(32, 99);
+    await expectError(
+      resolve({ bountyId: negBountyId, outcome: true, exploitHash: bad }),
+      "MissingSigVerify"
+    );
+  });
+
+  it("(5b) verdict binding wrong env_blob_sha256 fails (V3 hole closed)", async () => {
+    const bad = Buffer.alloc(32, 98);
+    await expectError(
+      resolve({ bountyId: negBountyId, outcome: true, envHash: bad }),
+      "MissingSigVerify"
+    );
+  });
+
+  it("(5c) verdict binding wrong flag_commitment fails", async () => {
+    const bad = Buffer.alloc(32, 97);
+    await expectError(
+      resolve({ bountyId: negBountyId, outcome: true, flagCommitment: bad }),
+      "MissingSigVerify"
+    );
+  });
+
+  it("(5d) non-operator signer fails", async () => {
+    const impostor = anchor.web3.Keypair.generate();
+    await expectError(
+      resolve({ bountyId: negBountyId, outcome: true, operatorKp: impostor }),
+      "UnauthorizedOperator"
+    );
+  });
+
+  it("(5e) missing Ed25519 instruction fails", async () => {
+    await expectError(
+      resolve({ bountyId: negBountyId, outcome: true, includeEd25519Ix: false }),
+      "MissingSigVerify"
+    );
+  });
+
+  // ---------------------------------------------------------------------
+  it("(6) resolve FAIL refunds bond, wipes slot, allows resubmit", async () => {
+    const id = negBountyId; // still AwaitingResolution from the negatives
+    const bountyKey = bountyPda(buyer.publicKey, id);
+    const before = await balance(solver.publicKey);
+
+    await resolve({ bountyId: id, outcome: false, ciphertextUrl: "" });
+
+    assert.equal((await balance(solver.publicKey)) - before, BOND_LAMPORTS);
+    let b = await program.account.bounty.fetch(bountyKey);
+    assert.deepEqual(b.status, { open: {} });
+    assert.isNull(b.currentSubmission);
+    assert.isNull(await program.account.receipt.fetchNullable(receiptPda(bountyKey)));
+    assert.isNull(await program.account.reveal.fetchNullable(revealPda(bountyKey)));
+
+    // Slot free again.
+    await submitExploit(id);
+    b = await program.account.bounty.fetch(bountyKey);
+    assert.deepEqual(b.status, { awaitingResolution: {} });
+  });
+
+  // ---------------------------------------------------------------------
+  it("(7a) force_unlock_submission rejects before the delay elapses", async () => {
+    const id = nextBountyId++; // default 3600 s delay still configured
+    await createBounty(id);
+    await submitExploit(id);
+    await expectError(
+      program.methods
+        .forceUnlockSubmission(new BN(id))
+        .accountsStrict({
+          caller: relayer.publicKey,
+          bounty: bountyPda(buyer.publicKey, id),
+          config: configPda,
+          solver: solver.publicKey,
+        })
+        .signers([relayer])
+        .rpc(),
+      "ForceUnlockTooEarly"
+    );
+  });
+
+  it("(7b) force_unlock_submission unlocks once Config delay has passed", async () => {
+    // Shrink the delay via authority (proves the Config knob works too).
+    await program.methods
+      .setOperators([operator.publicKey], 1, [...ENC_PK], new BN(1))
+      .accountsStrict({ authority: payer.publicKey, config: configPda })
+      .rpc();
+
+    const id = nextBountyId++;
+    await createBounty(id);
+    await submitExploit(id);
+
+    const bountyKey = bountyPda(buyer.publicKey, id);
+    const before = await balance(solver.publicKey);
+    // Wait out Config.force_unlock_delay_s measured in CHAIN seconds.
+    const pending = await program.account.bounty.fetch(bountyKey);
+    const sub = pending.currentSubmission! as any;
+    await waitUntilChainPast(
+      sub.submittedAt.toNumber() +
+        (await program.account.config.fetch(configPda)).forceUnlockDelayS.toNumber()
+    );
+
+    await program.methods
+      .forceUnlockSubmission(new BN(id))
+      .accountsStrict({
+        caller: relayer.publicKey,
+        bounty: bountyKey,
+        config: configPda,
+        solver: solver.publicKey,
+      })
+      .signers([relayer])
+      .rpc();
+
+    assert.equal((await balance(solver.publicKey)) - before, BOND_LAMPORTS);
+    const b = await program.account.bounty.fetch(bountyKey);
+    assert.deepEqual(b.status, { open: {} });
+    assert.isNull(b.currentSubmission);
+
+    // Restore launch posture.
+    await program.methods
+      .setOperators([operator.publicKey], 1, [...ENC_PK], new BN(DEFAULT_UNLOCK_DELAY_S))
+      .accountsStrict({ authority: payer.publicKey, config: configPda })
+      .rpc();
+  });
+
+  // ---------------------------------------------------------------------
+  it("(8) cancel_expired_bounty refunds prize+rent and closes the account", async () => {
+    const id = nextBountyId++;
+    await createBounty(id, { deadlineOffsetS: 2 });
+    const bountyKey = bountyPda(buyer.publicKey, id);
+    await waitUntilExpired(bountyKey);
+
+    const before = await balance(buyer.publicKey);
+    await program.methods
+      .cancelExpiredBounty(new BN(id))
+      .accountsStrict({ buyer: buyer.publicKey, bounty: bountyKey })
       .signers([buyer])
       .rpc();
-    await provider.connection.confirmTransaction(sig, "confirmed");
 
-    const buyerBalanceAfterCancel = await provider.connection.getBalance(buyer.publicKey);
-    // Buyer recovers the full bounty account balance (prize + rent reserve),
-    // minus the transaction fee this cancel instruction itself cost.
-    assert.isAbove(buyerBalanceAfterCancel, buyerBalanceBeforeCancel + bountyBalanceBeforeCancel - 20_000);
+    const delta = (await balance(buyer.publicKey)) - before;
+    assert.isAtLeast(delta, PRIZE_LAMPORTS); // prize + rent back, minus fee
+    assert.isNull(await program.account.bounty.fetchNullable(bountyKey));
+  });
 
-    const closedAccount = await provider.connection.getAccountInfo(bounty);
-    assert.isNull(closedAccount, "bounty account should be closed after cancellation");
+  it("(8a) cancel still refuses while a submission is awaiting resolution", async () => {
+    const id = nextBountyId++;
+    await createBounty(id, { deadlineOffsetS: 2 });
+    await submitExploit(id);
+    await waitUntilExpired(bountyPda(buyer.publicKey, id)); // slot stays claimed
+    await expectError(
+      program.methods
+        .cancelExpiredBounty(new BN(id))
+        .accountsStrict({
+          buyer: buyer.publicKey,
+          bounty: bountyPda(buyer.publicKey, id),
+        })
+        .signers([buyer])
+        .rpc(),
+      "NotOpen"
+    );
   });
 });
