@@ -1,0 +1,21 @@
+{
+  "name": "@sealed-code-bounty/relayer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Permissionless relayer: watches ExploitSubmitted events, drives the verification enclave, lands enclave-signed verdict transactions.",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/relayer/src/index.js",
+    "test": "npm run build && node --test dist/relayer/src/test/*.test.js"
+  },
+  "dependencies": {
+    "@anchor-lang/core": "^1.1.2",
+    "@solana/web3.js": "1.98.4",
+    "tweetnacl": "^1.0.3",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.0"
+  }
+}

@@ -12,3 +12,5 @@ tests/.keys
 cli/node_modules/
 cli/dist/
 out/
+relayer/node_modules/
+relayer/dist/
