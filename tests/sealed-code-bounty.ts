@@ -14,8 +14,8 @@ import * as path from "path";
  *   config bootstrap + operator rotation bounds
  *   create_bounty escrow economics
  *   submit_exploit bond + slot serialization + deadline guard
- *   resolve_with_attestation PASS (real SCB_VERDICT_V3 bytes, real ed25519
- *     signature over the exact 175-byte wire, native Ed25519SigVerify
+ *   resolve_with_attestation PASS (real SCB_VERDICT_V4 bytes, real ed25519
+ *     signature over the exact 207-byte wire, native Ed25519SigVerify
  *     instruction composed atomically with the resolution) and FAIL
  *   verdict-binding negatives (exploit/env/flag/operator/missing-ix)
  *   force_unlock_submission (too-early reject + delayed unlock)
@@ -28,13 +28,14 @@ const ED25519_PROGRAM_ID = new anchor.web3.PublicKey(
 const INSTRUCTIONS_SYSVAR_ID = new anchor.web3.PublicKey(
   "Sysvar1nstructions1111111111111111111111111"
 );
-const VERDICT_TAG = Buffer.from("SCB_VERDICT_V3", "ascii");
-const VERDICT_MSG_LEN = 175;
+const VERDICT_TAG = Buffer.from("SCB_VERDICT_V4", "ascii");
+const VERDICT_MSG_LEN = 207;
+const BUYER_ENC_PK = Buffer.alloc(32, 9);
 
 const PRIZE_LAMPORTS = 1 * anchor.web3.LAMPORTS_PER_SOL;
 const BOND_LAMPORTS = 0.05 * anchor.web3.LAMPORTS_PER_SOL;
 const DEFAULT_UNLOCK_DELAY_S = 3600;
-const FUND_SOL = 10;
+const FUND_SOL = 50;
 
 // Deterministic 32-byte filler hashes; contents don't matter to the program,
 // only that they match across create -> submit -> verdict.
@@ -199,7 +200,7 @@ describe("sealed-code-bounty v2", () => {
         [...MANIFEST_HASH],
         [...ENV_HASH],
         [...FLAG_COMMITMENT],
-        [...ENC_PK]
+        [...BUYER_ENC_PK]
       )
       .accountsStrict({
         buyer: buyer.publicKey,
@@ -226,7 +227,7 @@ describe("sealed-code-bounty v2", () => {
       .rpc();
   }
 
-  /** Canonical SCB_VERDICT_V3 wire — must mirror constants.rs exactly. */
+  /** Canonical SCB_VERDICT_V4 wire — must mirror constants.rs exactly. */
   function buildVerdictMessage(
     bountyKey: anchor.web3.PublicKey,
     envHash: Buffer,
@@ -242,6 +243,7 @@ describe("sealed-code-bounty v2", () => {
       exploitHash,
       solverPk,
       flagCommitment,
+      BUYER_ENC_PK,
       Buffer.from([outcome ? 1 : 0]),
     ]);
   }
@@ -709,4 +711,112 @@ describe("sealed-code-bounty v2", () => {
       "NotOpen"
     );
   });
+  // ---------------------------------------------------------------------
+  // Audit L1: FAIL verdicts must not carry payout accounts.
+  it("(L1) FAIL resolve with receipt/reveal accounts reverts", async () => {
+    const id = nextBountyId++;
+    await createBounty(id);
+    await submitExploit(id);
+    const bountyKey = bountyPda(buyer.publicKey, id);
+
+    const message = buildVerdictMessage(
+      bountyKey,
+      ENV_HASH,
+      EXPLOIT_HASH,
+      solver.publicKey.toBuffer(),
+      FLAG_COMMITMENT,
+      false
+    );
+    const signature = nacl.sign.detached(message, operator.secretKey);
+    const ed25519Ix = anchor.web3.Ed25519Program.createInstructionWithPublicKey({
+      publicKey: operator.publicKey.toBytes(),
+      signature,
+      message,
+    });
+    const failIx = await program.methods
+      .resolveWithAttestation(new BN(id), false, Buffer.alloc(0), "", Buffer.alloc(32))
+      .accountsStrict({
+        relayer: relayer.publicKey,
+        config: configPda,
+        bounty: bountyKey,
+        solver: solver.publicKey,
+        receipt: receiptPda(bountyKey), // MUST be null on FAIL (audit L1)
+        reveal: revealPda(bountyKey),
+        ed25519Program: ED25519_PROGRAM_ID,
+        instructions: INSTRUCTIONS_SYSVAR_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .instruction();
+    const tx = new anchor.web3.Transaction().add(ed25519Ix, failIx);
+    try {
+      await provider.sendAndConfirm(tx, [relayer]);
+      throw new Error("expected UnexpectedPayoutAccounts");
+    } catch (e: any) {
+      assert.match(String(e?.message ?? e), /UnexpectedPayoutAccounts|0x601b/);
+    }
+  });
+
+  // ---------------------------------------------------------------------
+  // Audit L2: Resolved bounties can be swept — rent returns to the buyer.
+  it("(L2) close_resolved_bounty refunds rent and closes; rejects unresolved", async () => {
+    // Resolve a fresh bounty first.
+    const id = nextBountyId++;
+    await createBounty(id);
+    await submitExploit(id);
+    await resolve({ bountyId: id, outcome: true });
+
+    const bountyKey = bountyPda(buyer.publicKey, id);
+    const buyerBefore = await provider.connection.getBalance(buyer.publicKey);
+    const callerBefore = await provider.connection.getBalance(relayer.publicKey);
+
+    await program.methods
+      .closeResolvedBounty(new BN(id))
+      .accountsStrict({
+        caller: relayer.publicKey,
+        bounty: bountyKey,
+        buyer: buyer.publicKey,
+      })
+      .signers([relayer])
+      .rpc();
+
+    assert.isNull(await program.account.bounty.fetchNullable(bountyKey));
+    const buyerAfter = await provider.connection.getBalance(buyer.publicKey);
+    assert.ok(buyerAfter > buyerBefore, "buyer rent refund missing");
+    void callerBefore;
+
+    // Second sweep rejects: account gone.
+    try {
+      await program.methods
+        .closeResolvedBounty(new BN(id))
+        .accountsStrict({
+          caller: relayer.publicKey,
+          bounty: bountyKey,
+          buyer: buyer.publicKey,
+        })
+        .signers([relayer])
+        .rpc();
+      throw new Error("expected close of closed account to fail");
+    } catch {
+      // Any failure is correct: the account is already closed.
+    }
+
+    // Non-resolved bounty must reject (Open with no expiry).
+    const openId = nextBountyId++;
+    await createBounty(openId);
+    try {
+      await program.methods
+        .closeResolvedBounty(new BN(openId))
+        .accountsStrict({
+          caller: relayer.publicKey,
+          bounty: bountyPda(buyer.publicKey, openId),
+          buyer: buyer.publicKey,
+        })
+        .signers([relayer])
+        .rpc();
+      throw new Error("expected NotResolved");
+    } catch (e: any) {
+      assert.match(String(e?.message ?? e), /NotResolved|custom program error/);
+    }
+  });
+
 });

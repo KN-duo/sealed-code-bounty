@@ -199,7 +199,8 @@ impl AppState {
         self.uploads.lock().expect("uploads").insert(receipt_hex, record);
     }
 
-    pub fn take_latest_upload_for_bounty(
+    /// Peeks the newest upload for a bounty WITHOUT consuming it.
+    pub fn peek_latest_upload_for_bounty(
         &self,
         bounty_pda_b58: &str,
     ) -> Option<(String, BlobRecord)> {
@@ -211,27 +212,59 @@ impl AppState {
         rec.map(|r| (key, r))
     }
 
+    /// Consumes (removes + releases storage) an upload once its verdict has
+    /// been produced. The caller MUST zeroize the returned plaintext buffer
+    /// before dropping it. Fixes audit M1 (uploads never freed).
+    pub fn consume_upload(&self, receipt_hex: &str) -> Option<BlobRecord> {
+        let rec = {
+            let mut uploads = self.uploads.lock().expect("uploads");
+            uploads.remove(receipt_hex)?
+        };
+        self.storage_release(rec.plaintext.len() as u64);
+        self.latest_by_bounty
+            .lock()
+            .expect("latest map")
+            .retain(|_, v| v != receipt_hex);
+        Some(rec)
+    }
+
     /// TTL sweeper: purge unregistered uploads older than the window.
     /// Returns number purged. Registered blobs are exempt.
     pub fn sweep_expired(&self) -> usize {
-        let cutoff = now_unix().saturating_sub(self.cfg.blob_ttl_secs);
+        let now = now_unix();
+        let cutoff = now.saturating_sub(self.cfg.blob_ttl_secs);
         let mut purged = 0usize;
-        let mut uploads = self.uploads.lock().expect("uploads");
-        let expired: Vec<String> = uploads
-            .iter()
-            .filter(|(_, r)| !r.registered && r.created_at < cutoff)
-            .map(|(k, _)| k.clone())
-            .collect();
-        for key in expired {
-            if let Some(rec) = uploads.remove(&key) {
-                self.storage_release(rec.plaintext.len() as u64);
-                self.latest_by_bounty
-                    .lock()
-                    .expect("latest map")
-                    .retain(|_, v| v != &key);
-                purged += 1;
+        {
+            let mut uploads = self.uploads.lock().expect("uploads");
+            let expired: Vec<String> = uploads
+                .iter()
+                .filter(|(_, r)| !r.registered && r.created_at < cutoff)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in expired {
+                if let Some(rec) = uploads.remove(&key) {
+                    self.storage_release(rec.plaintext.len() as u64);
+                    self.latest_by_bounty
+                        .lock()
+                        .expect("latest map")
+                        .retain(|_, v| v != &key);
+                    purged += 1;
+                }
             }
         }
+        // Audit L3: evict rate-limit buckets idle for >2 windows so they do
+        // not grow without bound. The IP bucket remains as a coarse backstop;
+        // NAT users legitimately share it by design.
+        let idle_secs = (self.cfg.rate_limit_window_secs * 2) as f64;
+        let nowf = now as f64;
+        self.wallet_buckets
+            .lock()
+            .expect("wallet buckets")
+            .retain(|_, b| nowf - b.updated_secs < idle_secs);
+        self.ip_buckets
+            .lock()
+            .expect("ip buckets")
+            .retain(|_, b| nowf - b.updated_secs < idle_secs);
         purged
     }
 

@@ -180,6 +180,9 @@ pub fn handle_resolve_with_attestation(
     expected_msg.extend_from_slice(&submission.exploit_sha256);
     expected_msg.extend_from_slice(submission.solver.as_ref());
     expected_msg.extend_from_slice(&flag_commitment);
+    // V4: bind the buyer's reveal key — a colluding relayer+solver can no
+    // longer redirect the PASS ciphertext to an attacker X25519 key.
+    expected_msg.extend_from_slice(&bounty_acc.buyer_enc_pk);
     expected_msg.push(u8::from(outcome));
     require_eq!(
         expected_msg.len(),
@@ -237,6 +240,15 @@ pub fn handle_resolve_with_attestation(
         seen_keys.len() >= config.threshold as usize,
         ErrorCode::BadThreshold
     );
+
+    // ---- L1 (audit): FAIL verdicts must not touch payout PDAs. Accepting
+    // Some(receipt)/Some(reveal) here would mint zeroed garbage accounts.
+    if !outcome {
+        require!(
+            ctx.accounts.receipt.is_none() && ctx.accounts.reveal.is_none(),
+            ErrorCode::UnexpectedPayoutAccounts
+        );
+    }
 
     // ---- Money movement: bond refunded regardless of outcome ----
     let total_debit = if outcome {

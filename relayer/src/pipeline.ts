@@ -153,6 +153,7 @@ export function reconstructMessage(job: Job, bounty: BountyView, outcome: boolea
     exploitSha256: Buffer.from(sub.exploitSha256),
     solver: sub.solver.toBuffer(),
     flagCommitment: Buffer.from(bounty.flagCommitment),
+    buyerEncPk: Buffer.from(bounty.buyerEncPk),
     outcome,
   });
 }

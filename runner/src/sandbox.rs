@@ -81,10 +81,20 @@ impl SandboxExecutor for StubSandbox {
 
 /// Real executor driving `docker run` via argument arrays (no shell).
 ///
-/// Environment contract: the packed environment image must already be
-/// running as a container named/aliased `target` on the docker network given
-/// by [`DockerCli::network`] (scb-pack's dev-plane compose provides exactly
-/// this shape, which is what makes local results predictive — D13).
+/// Environment contract (audit M3): `network` MUST be a user-created,
+/// LOOPBACK-ONLY docker network (`docker network create --internal scb-loopback`)
+/// shared by the target container and this exploit container — never a
+/// default bridge, which grants internet egress and becomes a flag-exfil
+/// channel. scb-pack's generated compose file creates exactly such an
+/// `internal: true` network, which is what makes local runs predictive of
+/// verification runs (D13).
+///
+/// ASLR-off handling: we deliberately do NOT pass `--security-opt
+/// seccomp=unconfined`. The stock Docker seccomp profile already permits the
+/// `personality(ADDR_NO_RANDOMIZE)` syscalls that `setarch -R` uses, so
+/// dropping the override keeps thousands of other restrictions active.
+/// (Documented from the profile sources; runtime behavior not re-verified in
+/// this environment — docker is unavailable here.)
 pub struct DockerCli {
     pub runtime_image: String,
     pub network: String,
@@ -95,7 +105,7 @@ impl Default for DockerCli {
     fn default() -> Self {
         Self {
             runtime_image: "scb/exploit-runtime:latest".to_string(),
-            network: "bridge".to_string(),
+            network: "scb-loopback".to_string(),
             docker: PathBuf::from("docker"),
         }
     }
@@ -136,19 +146,6 @@ impl SandboxExecutor for DockerCli {
             "python3".into(),
             "exploit.py".into(),
         ];
-        if p.aslr_off {
-            // Parity note: this disables ASLR for the EXPLOIT process; the
-            // target-side personality comes from its own compose entrypoint
-            // (see cli compose generator). Both sides flip together.
-            args.splice(
-                args.len() - 5..args.len() - 5,
-                [
-                    "--security-opt".to_string(),
-                    "seccomp=unconfined".to_string(),
-                ],
-            );
-        }
-
         let child = tokio::process::Command::new(&self.docker)
             .args(&args)
             .stdout(std::process::Stdio::piped())

@@ -209,9 +209,10 @@ pub async fn verify(
     State(state): State<Arc<AppState>>,
     Json(req): Json<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>, ApiError> {
-    let (receipt_hex, record) = state
-        .take_latest_upload_for_bounty(&req.bounty_pda)
+    let (receipt_hex, record_peek) = state
+        .peek_latest_upload_for_bounty(&req.bounty_pda)
         .ok_or_else(|| ApiError::NotFound("no pending upload for this bounty".into()))?;
+    let record = record_peek.clone();
 
     // Chain-view divergence → hard conflict; the enclave never guesses which
     // side is right (review R1 seam).
@@ -226,13 +227,6 @@ pub async fn verify(
             "claimed_chain_view diverges from enclave-side values for bounty {}",
             req.bounty_pda
         )));
-    }
-
-    // Mark registered so the TTL sweeper leaves it alone while we work.
-    {
-        let mut rec = record.clone();
-        rec.registered = true;
-        state.store_upload(&req.bounty_pda, receipt_hex.clone(), rec);
     }
 
     // Derive flag; refuse to produce any verdict if the on-chain commitment
@@ -271,13 +265,21 @@ pub async fn verify(
 
     match state.config().sandbox.run_exploit(&run_params).await {
         Err(SandboxError::Unsupported(w)) => {
+            // Typed stub: leave the upload in place (TTL sweeper purges it in
+            // 30 min) so a future runner with a real sandbox can serve it.
             Err(ApiError::NotImplemented(format!("sandbox unavailable: {w}")))
         }
-        Err(SandboxError::Timeout) => Ok(Json(fail_response(&state, &cv_bytes, &solver_bytes, &pda))),
+        Err(SandboxError::Timeout) => {
+            let mut resp =
+                fail_response(&state, &cv_bytes, &solver_bytes, &pda);
+            resp.redacted_log = "[timeout] no output captured".to_string();
+            state.consume_upload(&receipt_hex);
+            Ok(Json(resp))
+        }
         Err(e) => Err(ApiError::Internal(format!("sandbox failure: {e}"))),
         Ok(exec_outcome) => {
             let pass = exec_outcome.output.contains(flag.expose());
-            let redacted_log = redact::redact(&exec_outcome.output, &flag);
+            let mut redacted_log = redact::redact(&exec_outcome.output, &flag);
 
             // Fail-closed paranoia sweep: if ANY encoding survived redaction,
             // emit FAIL with an empty log rather than risk a leak.
@@ -301,8 +303,20 @@ pub async fn verify(
                     redacted_log,
                 }
             } else {
-                fail_response(&state, &cv_bytes, &solver_bytes, &pda)
+                let mut resp =
+                    fail_response(&state, &cv_bytes, &solver_bytes, &pda);
+                resp.redacted_log = std::mem::take(&mut redacted_log); // audit L5
+                return Ok(Json(resp));
             };
+            // Audit M1: consume now that a verdict exists, releasing the
+            // storage reservation, and ZEROIZE every plaintext buffer.
+            if let Some(mut consumed) = state.consume_upload(&receipt_hex) {
+                consumed.plaintext.fill(0);
+            }
+            drop(record_peek);
+            let mut local = record;
+            local.plaintext.fill(0);
+            drop(local);
             Ok(Json(response))
         }
     }
@@ -323,6 +337,7 @@ fn sign_verdict_b64(
             exploit_sha256: &cv.exploit_sha256,
             solver,
             flag_commitment: &cv.flag_commitment,
+            buyer_enc_pk: &cv.buyer_enc_pk,
             outcome,
         },
     );

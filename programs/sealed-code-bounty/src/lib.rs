@@ -101,6 +101,16 @@ pub mod sealed_code_bounty {
         )
     }
 
+    pub fn close_resolved_bounty(
+        ctx: Context<CloseResolvedBounty>,
+        bounty_id: u64,
+    ) -> Result<()> {
+        crate::instructions::close_resolved_bounty::handle_close_resolved_bounty(
+            ctx,
+            bounty_id,
+        )
+    }
+
     pub fn cancel_expired_bounty(ctx: Context<CancelExpiredBounty>, bounty_id: u64) -> Result<()> {
         crate::instructions::cancel_expired_bounty::handle_cancel_expired_bounty(ctx, bounty_id)
     }

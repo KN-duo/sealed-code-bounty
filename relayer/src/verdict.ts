@@ -8,8 +8,8 @@ import { PublicKey } from "@solana/web3.js";
  *   tag(14) || bounty_pda(32) || env_blob_sha256(32) || exploit_sha256(32)
  *   || solver(32) || flag_commitment(32) || outcome(1)  = 175 bytes
  */
-export const VERDICT_TAG = Buffer.from("SCB_VERDICT_V3", "ascii");
-export const VERDICT_MSG_LEN = 175;
+export const VERDICT_TAG = Buffer.from("SCB_VERDICT_V4", "ascii");
+export const VERDICT_MSG_LEN = 207;
 
 export interface VerdictFields {
   bountyPda: Buffer;
@@ -17,6 +17,7 @@ export interface VerdictFields {
   exploitSha256: Buffer;
   solver: Buffer;
   flagCommitment: Buffer;
+  buyerEncPk: Buffer;
   outcome: boolean;
 }
 
@@ -30,6 +31,7 @@ export function buildVerdictMessage(f: VerdictFields): Buffer {
   assert32(f.exploitSha256, "exploitSha256");
   assert32(f.solver, "solver");
   assert32(f.flagCommitment, "flagCommitment");
+  assert32(f.buyerEncPk, "buyerEncPk");
   const msg = Buffer.concat([
     VERDICT_TAG,
     f.bountyPda,
@@ -37,6 +39,7 @@ export function buildVerdictMessage(f: VerdictFields): Buffer {
     f.exploitSha256,
     f.solver,
     f.flagCommitment,
+    f.buyerEncPk,
     Buffer.from([f.outcome ? 1 : 0]),
   ]);
   if (msg.length !== VERDICT_MSG_LEN) {

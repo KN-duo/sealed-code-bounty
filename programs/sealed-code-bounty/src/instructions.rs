@@ -1,4 +1,6 @@
 pub mod cancel_expired_bounty;
+pub mod close_resolved_bounty;
+pub use close_resolved_bounty::*;
 pub mod create_bounty;
 pub mod force_unlock_submission;
 pub mod initialize_config;

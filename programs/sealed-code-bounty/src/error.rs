@@ -38,6 +38,8 @@ pub enum ErrorCode {
     InvalidRevealPayload,
     #[msg("Receipt and Reveal accounts are required for a PASS resolution")]
     MissingPayoutAccounts,
+    #[msg("FAIL resolutions must not carry Receipt or Reveal accounts")]
+    UnexpectedPayoutAccounts,
     #[msg("Force unlock delay has not elapsed yet")]
     ForceUnlockTooEarly,
     #[msg("Force unlock delay must be greater than zero")]
@@ -46,4 +48,6 @@ pub enum ErrorCode {
     EscrowInsufficient,
     #[msg("Bounty deadline has not passed yet")]
     NotExpiredYet,
+    #[msg("Bounty is not in Resolved status")]
+    NotResolved,
 }

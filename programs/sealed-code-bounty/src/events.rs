@@ -62,3 +62,9 @@ pub struct SubmissionUnlocked {
     pub solver: Pubkey,
     pub bounty_id: u64,
 }
+
+#[event]
+pub struct BountyClosed {
+    pub bounty_id: u64,
+    pub buyer: Pubkey,
+}

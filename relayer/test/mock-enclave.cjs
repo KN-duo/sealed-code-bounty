@@ -38,14 +38,15 @@ function b58decode(s) {
   return Buffer.from(n.toString(16).padStart(64, "0"), "hex");
 }
 
-function buildMessage(bountyPdaB58, envHex, exploitHex, solverB58, flagHex, outcome) {
+function buildMessage(bountyPdaB58, envHex, exploitHex, solverB58, flagHex, buyerPkHex, outcome) {
   return Buffer.concat([
-    Buffer.from("SCB_VERDICT_V3", "ascii"),
+    Buffer.from("SCB_VERDICT_V4", "ascii"),
     b58decode(bountyPdaB58),
     Buffer.from(envHex, "hex"),
     Buffer.from(exploitHex, "hex"),
     b58decode(solverB58),
     Buffer.from(flagHex, "hex"),
+    Buffer.from(buyerPkHex, "hex"),
     Buffer.from([outcome ? 1 : 0]),
   ]);
 }
@@ -70,6 +71,7 @@ function makeHandler(kp, tamper) {
           cv.exploit_sha256,
           rb.solver_pubkey,
           cv.flag_commitment,
+          cv.buyer_enc_pk,
           outcome
         );
         const sig = Buffer.from(nacl.sign.detached(new Uint8Array(msg), kp.secretKey));

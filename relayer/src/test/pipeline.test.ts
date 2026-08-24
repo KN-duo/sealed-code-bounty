@@ -145,18 +145,19 @@ function depsWith(
 // (T1) verdict wire reconstruction — the bytes everything else stands on
 // ---------------------------------------------------------------------------
 
-test("(T1) SCB_VERDICT_V3 wire is exactly 175 bytes with the documented layout", () => {
+test("(T1) SCB_VERDICT_V4 wire is exactly 207 bytes with the documented layout", () => {
   const { bounty, job } = bountyFixture();
   const msg = reconstructMessage(job, bounty, true);
 
   assert.equal(msg.length, VERDICT_MSG_LEN);
-  assert.ok(msg.subarray(0, 14).equals(Buffer.from("SCB_VERDICT_V3", "ascii")));
+  assert.ok(msg.subarray(0, 14).equals(Buffer.from("SCB_VERDICT_V4", "ascii")));
   assert.ok(msg.subarray(14, 46).equals(job.bountyPda.toBuffer()));
   assert.ok(msg.subarray(46, 78).equals(Buffer.from(bounty.envBlobSha256)));
   assert.ok(msg.subarray(78, 110).equals(Buffer.from(bounty.currentSubmission!.exploitSha256)));
   assert.ok(msg.subarray(110, 142).equals(bounty.currentSubmission!.solver.toBuffer()));
   assert.ok(msg.subarray(142, 174).equals(Buffer.from(bounty.flagCommitment)));
-  assert.equal(msg[174], 1); // outcome PASS
+  assert.ok(msg.subarray(174, 206).equals(Buffer.from(bounty.buyerEncPk))); // V4
+  assert.equal(msg[206], 1); // outcome PASS
 });
 
 test("(T1b) buildVerdictMessage flips only the outcome byte between PASS/FAIL", () => {
@@ -166,12 +167,13 @@ test("(T1b) buildVerdictMessage flips only the outcome byte between PASS/FAIL", 
     exploitSha256: Buffer.alloc(32, 3),
     solver: Buffer.alloc(32, 4),
     flagCommitment: Buffer.alloc(32, 5),
+    buyerEncPk: Buffer.alloc(32, 6),
     outcome: false,
   };
   const pass = buildVerdictMessage({ ...f, outcome: true });
   const fail = buildVerdictMessage(f);
-  assert.deepEqual(pass.subarray(0, 174), fail.subarray(0, 174));
-  assert.equal(pass[174] - fail[174], 1);
+  assert.deepEqual(pass.subarray(0, 206), fail.subarray(0, 206));
+  assert.equal(pass[206] - fail[206], 1);
 });
 
 // ---------------------------------------------------------------------------

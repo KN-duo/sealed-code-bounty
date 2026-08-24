@@ -66,7 +66,7 @@ export function renderCompose(
   lines.push("  target:");
   lines.push(`    image: ${imageTag}`);
   lines.push("    networks:");
-  lines.push("      default: {}");
+  lines.push("      scbnet: {}");
   if (m.determinism.aslr === "off") {
     if (origTokens.length === 0) {
       // Caller validated earlier; defensive line keeps generated file honest.
@@ -96,6 +96,7 @@ export function renderCompose(
   lines.push("    depends_on:");
   lines.push("      - target");
   lines.push("    networks:");
+  lines.push("      scbnet: {}");
   lines.push("      default: {}");
   lines.push("    ports:");
   lines.push('      - "7681:7681"');
@@ -115,9 +116,13 @@ export function renderCompose(
     lines.push(`        ${chunk}`);
   }
 
+  // Audit M3: 'internal: true' = loopback-only fabric. The target has NO
+  // internet egress; only the workspace touches the outside world for tooling.
   lines.push("networks:");
-  lines.push("  default:");
-  lines.push("    {}");
+  lines.push("  scbnet:");
+  lines.push("    driver: bridge");
+  lines.push("    internal: true");
+  lines.push("  default: {}");
   lines.push("");
   return lines.join("\n");
 }

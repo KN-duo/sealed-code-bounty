@@ -12,41 +12,58 @@ use base64::Engine;
 
 pub const REDACTION_TOKEN: &str = "[REDACTED]";
 
-fn b64(data: &[u8]) -> String {
-    base64::engine::general_purpose::STANDARD.encode(data)
+fn b64_variants(data: &[u8]) -> Vec<String> {
+    // All four libsodium/base64 alphabet+padding combinations an attacker's
+    // language runtime could emit (Python's b64encode().rstrip("=") included).
+    let std_padded = base64::engine::general_purpose::STANDARD.encode(data);
+    let std_nopad = base64::engine::general_purpose::STANDARD_NO_PAD.encode(data);
+    let url_padded = base64::engine::general_purpose::URL_SAFE.encode(data);
+    let url_nopad = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data);
+    vec![std_padded, std_nopad, url_padded, url_nopad]
 }
 
-/// Every needle that must vanish from hunter-visible output. Order: longest
-/// first. Deduplicated.
+/// Every needle that must vanish from hunter-visible output. Longest-first,
+/// deduplicated. SINGLE SOURCE OF TRUTH: both [`redact`] and [`leaks`] call
+/// this, so they can never diverge.
 pub fn needles(flag: &FlagString) -> Vec<String> {
     let raw = flag.expose();
     let bytes = flag.expose_bytes();
 
     let hex_lower = hex::encode(bytes);
     let hex_upper = hex_lower.to_uppercase();
-    let b64_str = b64(bytes);
+    let b64_all = b64_variants(bytes);
 
-    // Double encodings.
-    let mut doubles: Vec<String> = vec![
-        hex::encode(b64_str.as_bytes()),          // hex of base64
-        b64(hex_lower.as_bytes()),                // base64 of hex(lower)
-        b64(hex_upper.as_bytes()),                // base64 of hex(upper)
-        hex::encode(raw.as_bytes()),              // hex of base58 == hex of raw
-        b64(raw.as_bytes()),                      // base64 of base58 == base64 of raw
-    ];
-    doubles.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    let mut all: Vec<String> = Vec::new();
 
-    let mut all: Vec<String> = doubles;
-    all.push(b64_str);
+    // Double encodings first (longest): hex over every b64 variant,
+    // every b64 variant over hex(lower/upper) and over the raw base58.
+    for b64v in &b64_all {
+        all.push(hex::encode(b64v.as_bytes()));
+        all.push(b64_variants(b64v.as_bytes()).pop().unwrap_or_default());
+        all.push(b64_variants(b64v.as_bytes())[0].clone());
+        all.push(b64_variants(b64v.as_bytes())[1].clone());
+        all.push(b64_variants(b64v.as_bytes())[2].clone());
+        all.push(b64_variants(b64v.as_bytes())[3].clone());
+        void(b64v);
+    }
+    for hx in [&hex_lower, &hex_upper] {
+        all.extend(b64_variants(hx.as_bytes()));
+    }
+    all.extend(b64_variants(raw.as_bytes()));
+
+    // Single encodings.
     all.push(hex_upper);
     all.push(hex_lower);
     all.push(raw.to_string());
+
     all.retain(|s| !s.is_empty());
-    all.dedup(); // requires sort; re-sort by length desc after dedup:
     all.sort_by_key(|s| std::cmp::Reverse(s.len()));
     all.dedup();
     all
 }
+
+#[inline]
+fn void<T>(_: &T) {}
 
 /// Replaces every occurrence of every flag encoding with [`REDACTION_TOKEN`].
 pub fn redact(output: &str, flag: &FlagString) -> String {
@@ -59,8 +76,8 @@ pub fn redact(output: &str, flag: &FlagString) -> String {
     out
 }
 
-/// True if any encoding of the flag survives in `output`. Used by tests and
-/// by the verify pipeline's final paranoia sweep.
+/// True if any encoding of the flag survives in `output`. Shares the exact
+/// needle builder with [`redact`] — they cannot diverge.
 pub fn leaks(output: &str, flag: &FlagString) -> bool {
     needles(flag).iter().any(|n| output.contains(n))
 }
@@ -78,7 +95,7 @@ mod tests {
         let flag = fixture_flag();
         let hex_l = hex::encode(flag.expose_bytes());
         let hex_u = hex_l.to_uppercase();
-        let b64v = b64(flag.expose_bytes());
+        let b64v = base64::engine::general_purpose::STANDARD.encode(flag.expose_bytes());
 
         let raw_out = format!(
             "before {f} mid {hl} MID {hu} mId {b} end",
@@ -97,10 +114,12 @@ mod tests {
     fn removes_double_encodings() {
         let flag = fixture_flag();
         let bytes = flag.expose_bytes();
-        let b64v = b64(bytes);
+        let b64v = base64::engine::general_purpose::STANDARD.encode(bytes);
         let hex_of_b64 = hex::encode(b64v.as_bytes());
-        let b64_of_hex_lower = b64(hex::encode(bytes).as_bytes());
-        let b64_of_hex_upper = b64(hex::encode(bytes).to_uppercase().as_bytes());
+        let b64_of_hex_lower = base64::engine::general_purpose::STANDARD
+            .encode(hex::encode(bytes).as_bytes());
+        let b64_of_hex_upper = base64::engine::general_purpose::STANDARD
+            .encode(hex::encode(bytes).to_uppercase().as_bytes());
 
         for encoded in [hex_of_b64, b64_of_hex_lower, b64_of_hex_upper] {
             let cleaned = redact(&format!("leak attempt: {encoded}"), &flag);
@@ -140,5 +159,43 @@ mod tests {
     fn empty_output_is_fine() {
         let flag = fixture_flag();
         assert_eq!(redact("", &flag), "");
+    }
+
+    #[test]
+    fn rstrip_equals_b64_attack_is_caught() {
+        // The audit's empirical bypass: Python's
+        //   base64.b64encode(flag).decode().rstrip("=")
+        // emits the UNPADDED standard-alphabet encoding, which the legacy
+        // needle set (STANDARD padded only) missed entirely.
+        let flag = fixture_flag();
+        let bytes = flag.expose_bytes();
+        use base64::Engine as _;
+        let padded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        let stripped = padded.trim_end_matches('=').to_string();
+        assert_ne!(stripped, padded, "fixture must actually lose padding");
+
+        // BEFORE (legacy builder): leaks() would return true -> bypass.
+        let legacy_needles = [padded.clone()];
+        assert!(
+            !legacy_needles.iter().any(|n| stripped.contains(n)),
+            "sanity: legacy needles miss the stripped form"
+        );
+
+        // AFTER: the shared builder catches it.
+        assert!(leaks(&stripped, &flag), "leaks must see the stripped form");
+        assert!(!leaks(&redact(&format!("out={stripped}"), &flag), &flag));
+    }
+
+    #[test]
+    fn urlsafe_alphabet_variants_are_caught() {
+        let flag = fixture_flag();
+        let bytes = flag.expose_bytes();
+        use base64::Engine as _;
+        let url = base64::engine::general_purpose::URL_SAFE.encode(bytes);
+        let url_nopad = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes);
+        for v in [url, url_nopad] {
+            assert!(leaks(&v, &flag), "survived: {v}");
+            assert!(!leaks(&redact(&v, &flag), &flag));
+        }
     }
 }
