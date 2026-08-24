@@ -1,5 +1,7 @@
 # EXPLAIN.md
 
+> ⚠️ **PRE-PIVOT HISTORY (do not follow).** This describes the old escrow-only program plus the Inco Lightning POC. The architecture pivoted to AWS Nitro Enclave verification — see `BUILD-PLAN.md` (R3) for current truth. Kept for file-by-file context on the original Anchor program, much of which survives into v2.
+
 What every file in this repo does, as of the escrow program plus a standalone Inco Lightning proof of concept (confidentiality not yet wired into the bounty flow itself). Files marked **(generated, untouched)** came from `anchor init` and haven't been edited; files marked **(hand-written)** contain the actual bounty logic.
 
 ## Root config
