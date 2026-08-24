@@ -1,0 +1,20 @@
+{
+  "name": "@sealed-code-bounty/scb-pack",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SealedCodeBounty challenge packager: builds a vulnerable environment, verifies the flag placeholder, emits the on-chain-committed manifest, the dev-plane compose file, and a sha256-pinned image tarball.",
+  "bin": {
+    "scb-pack": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepack": "npm run build"
+  },
+  "dependencies": {
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.3",
+    "@types/node": "^22.10.0"
+  }
+}

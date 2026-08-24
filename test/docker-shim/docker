@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# TEST HARNESS ONLY — minimal `docker` stand-in so scb-pack's orchestration can
+# be exercised on machines without a docker daemon. Honors exactly the
+# subcommand contract the packager uses: --version, build, create, cp,
+# rm -f, inspect --format {{json .}}, save. Real-docker behavior remains the
+# authoritative path; this shim only proves our plumbing (arg passing, hashing,
+# file emission, error exits).
+# ---------------------------------------------------------------------------
+set -u
+STATE="${SCB_SHIM_STATE:-/tmp/scb-shim}"
+FAIL_BUILD="${SCB_SHIM_FAIL_BUILD:-0}"
+mkdir -p "$STATE"
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  --version) echo "Docker version 27.0-shim, build scbharness"; exit 0 ;;
+  build)
+    tag=""; ctx=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        -t) tag="$2"; shift 2 ;;
+        *) ctx="$1"; shift ;;
+      esac
+    done
+    [ -f "$ctx/Dockerfile" ] || { echo "shim: Dockerfile not found in $ctx" >&2; exit 1; }
+    if [ "$FAIL_BUILD" = "1" ]; then echo "shim: simulated build failure" >&2; exit 1; fi
+    printf '%s\t%s\n' "$tag" "$(cd "$ctx" && pwd)" >> "$STATE/tags.tsv"
+    # Optional image config override supplied by the fixture.
+    if [ -f "$ctx/.scb-image-config.json" ]; then
+      cp "$ctx/.scb-image-config.json" "$STATE/imgcfg-${tag//[\/:]/_}.json"
+    fi
+    exit 0 ;;
+  create)
+    name=""; tag=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --name) name="$2"; shift 2 ;;
+        *) tag="$1"; shift ;;
+      esac
+    done
+    ctx=$(awk -F'\t' -v t="$tag" '$1==t{print $2}' "$STATE/tags.tsv" | tail -1)
+    [ -n "$ctx" ] || { echo "shim: unknown image $tag" >&2; exit 1; }
+    printf '%s\t%s\n' "$name" "$ctx" >> "$STATE/containers.tsv"
+    echo "sha256:$(printf '%s' "$name" | sha256sum | cut -c1-32)"
+    exit 0 ;;
+  cp)
+    src="$1"; dest="$2"
+    cid="${src%%:*}"; path="${src#*:}"
+    ctx=$(awk -F'\t' -v n="$cid" '$1==n{print $2}' "$STATE/containers.tsv" | tail -1)
+    [ -n "$ctx" ] || { echo "shim: unknown container $cid" >&2; exit 1; }
+    rel="${path#/}"                       # /flag -> flag
+    if [ ! -f "$ctx/$rel" ]; then
+      echo "shim: no such file in image: $rel" >&2
+      exit 1
+    fi
+    cp "$ctx/$rel" "$dest"
+    exit 0 ;;
+  rm) exit 0 ;;
+  inspect)
+    # post-shift args: $1=--format $2={{json .}} $3=<tag>
+    tag="${3}"
+    cfg="$STATE/imgcfg-${tag//[\/:]/_}.json"
+    arch='amd64'
+    if [ -f "$cfg" ]; then
+      ep=$(python3 - "$cfg" <<'PY'
+import json,sys
+c=json.load(open(sys.argv[1]))
+print(json.dumps([c.get("entrypoint",[])[0]] if c.get("entrypoint") else []))
+PY
+)
+      cm=$(python3 - "$cfg" <<'PY'
+import json,sys
+c=json.load(open(sys.argv[1]))
+print(json.dumps(c.get("args",[])))
+PY
+)
+    else
+      ep='["/usr/local/bin/serve"]'; cm='["socat","TCP-LISTEN:1337,reuseaddr,fork","EXEC:/usr/local/bin/serve"]'
+    fi
+    printf '{"Architecture":"%s","Config":{"Entrypoint":%s,"Cmd":%s}}\n' "$arch" "$ep" "$cm"
+    exit 0 ;;
+  save)
+    tag="${1}"
+    # Deterministic pseudo-payload derived from the tag (~192 KiB).
+    python3 - "$tag" <<'PY'
+import hashlib,sys
+h=hashlib.sha256(sys.argv[1].encode()).digest()
+out=sys.stdout.buffer
+block=b''
+for _ in range(3072):
+    h=hashlib.sha256(h).digest(); block+=h[:64]
+out.write(block)
+PY
+    exit 0 ;;
+  *)
+    echo "shim: unsupported subcommand: $cmd $*" >&2
+    exit 64 ;;
+esac

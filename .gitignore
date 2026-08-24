@@ -7,3 +7,8 @@ build
 test-ledger
 .yarn
 tests/.keys
+
+# scb-pack cli
+cli/node_modules/
+cli/dist/
+out/
