@@ -83,6 +83,7 @@ pub mod sealed_code_bounty {
 
     pub fn resolve_with_attestation(
         ctx: Context<ResolveWithAttestation>,
+        bounty_id: u64,
         outcome: bool,
         reveal_ciphertext: Vec<u8>,
         ciphertext_url: String,
@@ -90,6 +91,7 @@ pub mod sealed_code_bounty {
     ) -> Result<()> {
         crate::instructions::resolve_with_attestation::handle_resolve_with_attestation(
             ctx,
+            bounty_id,
             outcome,
             reveal_ciphertext,
             ciphertext_url,

@@ -1,19 +1,18 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::sysvar::instructions::{
-    load_current_index_checked, load_instruction_at_checked,
-};
+use solana_instructions_sysvar::{load_current_index_checked, load_instruction_at_checked};
+use sha2::{Digest, Sha256};
 
 use crate::{
     constants::*,
     error::ErrorCode,
     events::BountyResolved,
-    state::{Bounty, Config, Receipt, Reveal},
+    state::{Bounty, BountyStatus, Config, Receipt, Reveal},
 };
 
 // PERMISSIONLESS resolution (docs/BUILD_PLAN_v2.md §4.1). Anyone may land an
 // enclave-signed verdict; trust comes from cryptography, not identity:
 //
-//   1. The handler RECOMPUTES the canonical `SCB_VERDICT_V2` message bytes
+//   1. The handler RECOMPUTES the canonical `SCB_VERDICT_V3` message bytes
 //      from its own accounts/args — never from anything the relayer supplies.
 //   2. Every native Ed25519SigVerify instruction placed EARLIER in this same
 //      transaction is parsed (native data layout: num_signatures header, then
@@ -73,7 +72,7 @@ pub struct ResolveWithAttestation<'info> {
     pub ed25519_program: UncheckedAccount<'info>,
     /// CHECK: instructions sysvar — used to introspect the surrounding
     /// transaction; validated by the anchor loader helpers.
-    #[account(address = anchor_lang::sysvar::instructions::ID)]
+    #[account(address = INSTRUCTIONS_SYSVAR_ID)]
     pub instructions: UncheckedAccount<'info>,
     pub system_program: Program<'info, System>,
 }
@@ -153,6 +152,7 @@ fn parse_ed25519_verify_data(data: &[u8]) -> Result<Vec<VerdictCandidate>> {
 
 pub fn handle_resolve_with_attestation(
     ctx: Context<ResolveWithAttestation>,
+    _bounty_id: u64,
     outcome: bool,
     reveal_ciphertext: Vec<u8>,
     ciphertext_url: String,
@@ -174,6 +174,9 @@ pub fn handle_resolve_with_attestation(
     let mut expected_msg = Vec::with_capacity(VERDICT_MSG_LEN);
     expected_msg.extend_from_slice(VERDICT_DOMAIN_TAG);
     expected_msg.extend_from_slice(bounty_key.as_ref());
+    // V3: bind the environment this verdict was produced against — closes the
+    // fake-weak-environment payout hole (colluding relayer + unbound verdict).
+    expected_msg.extend_from_slice(&bounty_acc.env_blob_sha256);
     expected_msg.extend_from_slice(&submission.exploit_sha256);
     expected_msg.extend_from_slice(submission.solver.as_ref());
     expected_msg.extend_from_slice(&flag_commitment);
@@ -196,7 +199,7 @@ pub fn handle_resolve_with_attestation(
     let mut seen_sigs: Vec<[u8; 64]> = Vec::new();
 
     for ix_index in 0..current_index {
-        let ix = load_instruction_at_checked(ix_index, &ix_sysvar)?;
+        let ix = load_instruction_at_checked(ix_index as usize, &ix_sysvar)?;
         if ix.program_id != ED25519_PROGRAM_ID {
             continue;
         }
@@ -206,9 +209,8 @@ pub fn handle_resolve_with_attestation(
                 VERDICT_MSG_LEN,
                 ErrorCode::MissingSigVerify
             );
-            require_eq!(
-                candidate.message.as_slice(),
-                expected_msg.as_slice(),
+            require!(
+                candidate.message.as_slice() == expected_msg.as_slice(),
                 ErrorCode::MissingSigVerify
             );
 
@@ -280,10 +282,16 @@ pub fn handle_resolve_with_attestation(
             ErrorCode::InvalidRevealPayload
         );
         if has_ciphertext {
-            let digest = anchor_lang::solana_program::hash::hash(&reveal_ciphertext);
-            require_eq!(digest.to_bytes(), ciphertext_sha256, ErrorCode::InvalidRevealPayload);
+            let digest = Sha256::digest(&reveal_ciphertext);
+            require!(
+                digest.as_slice() == ciphertext_sha256.as_slice(),
+                ErrorCode::InvalidRevealPayload
+            );
         } else {
-            require_neq!(ciphertext_sha256, [0u8; 32], ErrorCode::InvalidRevealPayload);
+            require!(
+                ciphertext_sha256 != [0u8; 32],
+                ErrorCode::InvalidRevealPayload
+            );
         }
 
         let receipt = ctx
