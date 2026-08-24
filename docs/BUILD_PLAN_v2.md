@@ -327,6 +327,8 @@ IDL sync: after each `anchor build`, refresh `frontend/src/idl/*` from `target/i
 ---
 
 ## 5. Build order (phases with acceptance criteria)
+> **STATUS (2026-08-25):** live per-phase completion state, commit hashes, and the REAL-vs-STUB ledger live in [`STATUS.md`](../STATUS.md) at the repo root. The plan below is unchanged historical intent.
+
 
 | Phase | Deliverable | Done when |
 |---|---|---|
