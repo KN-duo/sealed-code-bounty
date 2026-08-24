@@ -1,11 +1,18 @@
 use anchor_lang::prelude::*;
 
-use crate::{constants::*, events::BountyCancelled, state::Bounty};
+use crate::{
+    constants::*,
+    error::ErrorCode,
+    events::BountyCancelled,
+    state::{Bounty, BountyStatus},
+};
 
 // Lets the buyer reclaim an escrowed prize once the deadline has passed with
-// no submission ever made. Deliberately blocked while a submission is
-// pending (`bounty.submitted`) so a buyer can't dodge paying a legitimate
-// solver by stalling past the deadline instead of calling resolve_submission.
+// no submission ever made. Deliberately blocked while the submission slot is
+// claimed (status == AwaitingResolution) so a buyer can't dodge paying a
+// legitimate solver by stalling past the deadline instead of landing a
+// verdict; the solver-side counterpart to that stall is
+// force_unlock_submission.
 #[derive(Accounts)]
 #[instruction(bounty_id: u64)]
 pub struct CancelExpiredBounty<'info> {
@@ -25,14 +32,17 @@ pub fn handle_cancel_expired_bounty(
     _bounty_id: u64,
 ) -> Result<()> {
     let bounty = &ctx.accounts.bounty;
-    bounty.assert_open()?;
+    require!(
+        bounty.status == BountyStatus::Open && bounty.current_submission.is_none(),
+        ErrorCode::NotOpen
+    );
     bounty.assert_expired(Clock::get()?.unix_timestamp)?;
 
     emit!(BountyCancelled {
         bounty: bounty.key(),
         buyer: ctx.accounts.buyer.key(),
         bounty_id: bounty.bounty_id,
-        refunded_amount: bounty.prize_amount,
+        refunded_amount: bounty.prize_lamports,
     });
 
     msg!(
