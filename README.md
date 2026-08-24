@@ -83,11 +83,12 @@ Prerequisites (in WSL2): [Rust](https://rustup.rs), the [Solana CLI](https://doc
 ```bash
 # from the repo root, inside WSL2
 npm install
+anchor keys sync                 # one-time on a fresh clone: align the program ID with your local keypair
 anchor build
-anchor test            # spins up a throwaway local validator (localnet-first)
+anchor test --validator legacy   # run the suite on a local validator
 ```
 
-`anchor test` runs on **localnet** by default — fast, deterministic, and free. An optional devnet smoke test is gated behind an env flag (`SCB_DEVNET=1`) and needs a funded devnet wallet.
+**Validator note:** Anchor 1.x defaults to the `surfpool` validator; this project runs its tests on the classic `solana-test-validator` via `--validator legacy` (no extra install needed). An optional devnet smoke test is gated behind `SCB_DEVNET=1` and needs a funded devnet wallet.
 
 ## Current status vs. the plan
 

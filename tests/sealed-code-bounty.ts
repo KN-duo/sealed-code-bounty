@@ -68,6 +68,20 @@ describe("sealed-code-bounty", () => {
     await provider.connection.confirmTransaction(sig, "confirmed");
   }
 
+  // Waits until the on-chain Clock actually passes `targetUnix`. A fresh local
+  // validator advances its clock from slots and can lag wall-clock time, so a
+  // fixed setTimeout is flaky; poll block time instead of trusting Date.now().
+  async function waitUntilOnChainTime(targetUnix: number, maxWaitMs = 30000) {
+    const start = Date.now();
+    while (Date.now() - start < maxWaitMs) {
+      const slot = await provider.connection.getSlot();
+      const t = await provider.connection.getBlockTime(slot);
+      if (t !== null && t > targetUnix) return;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    throw new Error("on-chain clock did not pass the deadline within maxWaitMs");
+  }
+
   async function createBounty(bountyId: anchor.BN, deadlineOffsetSeconds = 3600, prizeLamports = PRIZE_LAMPORTS) {
     const testSuiteHash = crypto.createHash("sha256").update(`suite-${bountyId}`).digest();
     const deadline = new anchor.BN(Math.floor(Date.now() / 1000) + deadlineOffsetSeconds);
@@ -198,7 +212,9 @@ describe("sealed-code-bounty", () => {
     const bountyId = RUN_ID.addn(3);
     const bounty = await createBounty(bountyId, 2, SMALL_PRIZE_LAMPORTS); // expires in 2 seconds, nobody submits
 
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+    // Poll the on-chain clock past the deadline instead of a fixed wall-clock sleep.
+    const created = await program.account.bounty.fetch(bounty);
+    await waitUntilOnChainTime(created.deadline.toNumber());
 
     const buyerBalanceBeforeCancel = await provider.connection.getBalance(buyer.publicKey);
     const bountyBalanceBeforeCancel = await provider.connection.getBalance(bounty);
