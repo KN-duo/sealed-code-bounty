@@ -1,5 +1,12 @@
 # EXPLAIN.md
 
+> ⚠️ **PRE-PIVOT HISTORY (v1).** This document describes the repo *before* the v2
+> pivot to AWS Nitro Enclave verification. The **Inco Lightning** proof of concept
+> it references has been removed on the `v2` branch, and `resolve_submission` is
+> being replaced by an enclave-signed `resolve_with_attestation`. It is kept for
+> historical context only — for the current architecture and plan, read
+> `README.md` and `docs/BUILD_PLAN_v2.md`.
+
 What every file in this repo does, as of the escrow program plus a standalone Inco Lightning proof of concept (confidentiality not yet wired into the bounty flow itself). Files marked **(generated, untouched)** came from `anchor init` and haven't been edited; files marked **(hand-written)** contain the actual bounty logic.
 
 ## Root config
