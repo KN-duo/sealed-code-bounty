@@ -141,9 +141,14 @@ mod tests {
             serde_json::json!({
                 "master_secret_hex": GOLDEN_M_HEX,
                 "bounty_pda_b58": GOLDEN_PDA_B58,
+                "tag_ascii": "SCB_VERDICT_V4",
+                "env_blob_sha256_hex": hex::encode(fields.env_blob_sha256),
+                "exploit_sha256_hex": hex::encode(fields.exploit_sha256),
+                "solver_pubkey_hex": hex::encode(fields.solver),
                 "operator_pubkey_hex": hex::encode(vk),
                 "flag_commitment_hex": hex::encode(fc),
                 "buyer_enc_pk_hex": hex::encode(fields.buyer_enc_pk),
+                "outcome_byte": "01",
                 "message_hex": hex::encode(build_message(&fields)),
                 "signature_b64": base64::engine::general_purpose::STANDARD.encode(sig),
             })
@@ -176,7 +181,7 @@ mod tests {
         let (sig, vk) = sign_verdict(&key, &fields);
 
         let golden_path =
-            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/golden/verdict_v4.json");
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../test-vectors/verdict_v4.json");
         let golden: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&golden_path)
                 .expect("tests/golden/verdict_v4.json present"),

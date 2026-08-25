@@ -8,10 +8,11 @@ import { loadConfig } from "./config";
 import { makeLogger } from "./logger";
 import { JobQueue, Job } from "./queue";
 import { processJob, PipelineDeps } from "./pipeline";
+import { decideRetry, shouldForceUnlock } from "./retry";
+import { chainClock } from "./clock";
 import type { SealedCodeBounty } from "../../target/types/sealed_code_bounty";
 
 const log = makeLogger("relayer");
-const queue = new JobQueue();
 
 async function main(): Promise<void> {
   const cfg = loadConfig();
@@ -47,6 +48,18 @@ async function main(): Promise<void> {
     idl as unknown as SealedCodeBounty,
     provider
   );
+
+  const queue = new JobQueue();
+  const attempts = new Map<string, number>();
+  /** Tracked AwaitingResolution jobs for the force-unlock sweeper. */
+  const pendingUnlocks = new Map<
+    string,
+    { bountyPda: PublicKey; solver: PublicKey; submittedAtSecs: number; bountyId: BN }
+  >();
+  const configPda = PublicKey.findProgramAddressSync(
+    [Buffer.from("config")],
+    program.programId
+  )[0];
 
   const deps: PipelineDeps = {
     program,
@@ -98,12 +111,104 @@ async function main(): Promise<void> {
       for (;;) {
         const job = queue.dequeue();
         if (!job) break;
-        await processJob(deps, job);
+        const key = job.bountyPda.toBase58();
+        const attemptNo = attempts.get(key) ?? 0;
+        const outcome = await processJob(deps, job);
+
+        if (outcome.status === "left-for-unlock") {
+          const decision = decideRetry("left-for-unlock", attemptNo);
+          if (decision.action === "requeue" && decision.delayMs >= 0) {
+            attempts.set(key, attemptNo + 1);
+            log.info("requeueing transient failure", {
+              bounty: key,
+              attempt: attemptNo + 1,
+              delayMs: decision.delayMs,
+            });
+            setTimeout(() => queue.enqueue(job), decision.delayMs).unref?.();
+          } else {
+            // Parked: the force-unlock sweeper owns this bounty now.
+            log.warn("job parked for force_unlock_submission", { bounty: key });
+          }
+        } else {
+          attempts.delete(key);
+        }
+
+        // Track pending submissions so the sweeper can free them.
+        try {
+          const b = (await deps.program.account.bounty.fetch(
+            job.bountyPda
+          )) as unknown as {
+            status: Record<string, unknown>;
+            currentSubmission: { submittedAt: BN } | null;
+          };
+          if (
+            "awaitingResolution" in b.status &&
+            b.currentSubmission &&
+            !pendingUnlocks.has(key)
+          ) {
+            pendingUnlocks.set(key, {
+              bountyPda: job.bountyPda,
+              solver: job.solver,
+              submittedAtSecs: b.currentSubmission.submittedAt.toNumber(),
+              bountyId: job.bountyId,
+            });
+          } else if (!("awaitingResolution" in b.status)) {
+            pendingUnlocks.delete(key);
+          }
+        } catch {
+          /* best-effort tracking */
+        }
       }
     } finally {
       busy = false;
     }
   };
+
+  // ---- force-unlock sweeper (audit P1-4b) --------------------------------
+  const sweepInterval = setInterval(() => {
+    void (async () => {
+      if (!running) return;
+      let nowSecs: number | null = null;
+      for (const [key, p] of [...pendingUnlocks.entries()]) {
+        try {
+          const b = (await deps.program.account.bounty.fetch(p.bountyPda)) as unknown as {
+            status: Record<string, unknown>;
+            currentSubmission: { submittedAt: BN } | null;
+          };
+          if (!("awaitingResolution" in b.status)) {
+            pendingUnlocks.delete(key);
+            continue;
+          }
+          if (nowSecs === null) nowSecs = await chainClock(connection);
+          const subAt =
+            b.currentSubmission?.submittedAt.toNumber() ?? p.submittedAtSecs;
+          const cfgAcc = (await deps.program.account.config.fetch(
+            configPda
+          )) as unknown as { forceUnlockDelayS: BN };
+          if (!shouldForceUnlock(nowSecs, subAt, cfgAcc.forceUnlockDelayS.toNumber()))
+            continue;
+
+          await deps.program.methods
+            .forceUnlockSubmission(p.bountyId)
+            .accountsStrict({
+              caller: cfg.feePayer.publicKey,
+              bounty: p.bountyPda,
+              config: configPda,
+              solver: p.solver,
+            })
+            .signers([cfg.feePayer])
+            .rpc();
+          pendingUnlocks.delete(key);
+          log.info("force_unlock_submission sent", { bounty: key });
+        } catch (e) {
+          log.warn("force-unlock sweep attempt failed", {
+            bounty: key,
+            error: String(e).slice(0, 200),
+          });
+        }
+      }
+    })().catch(() => {});
+  }, Math.max(cfg.pollIntervalMs, 15_000));
   const timer = setInterval(() => void tick(), cfg.pollIntervalMs);
 
   // ---- graceful shutdown --------------------------------------------------

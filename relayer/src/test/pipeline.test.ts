@@ -3,9 +3,40 @@ import { createRequire } from "node:module";
 type MockEnclaveHandle = { url: string; pubkeyB58: string; close(): Promise<void> };
 
 const requireMock = createRequire(__filename);
+
+/** Walks up to the repo root (dir containing .git), robust to outDir layouts. */
+function repoRoot(): string {
+  let dir = __dirname;
+  for (let i = 0; i < 8; i++) {
+    if (fs.existsSync(path.join(dir, ".git"))) return dir;
+    dir = path.dirname(dir);
+  }
+  throw new Error("repo root not found from " + __dirname);
+}
+
 function loadMock(): { startMockEnclave(o?: { tamper?: boolean }): Promise<MockEnclaveHandle> } {
-  const p = path.resolve(__dirname, "../../../../test/mock-enclave.cjs");
+  const p = path.resolve(repoRoot(), "relayer/test/mock-enclave.cjs");
   return requireMock(p);
+}
+
+/** Canonical cross-language verdict fixture (single source of truth). */
+interface VerdictVector {
+  master_secret_hex: string;
+  bounty_pda_b58: string;
+  tag_ascii: string;
+  env_blob_sha256_hex: string;
+  exploit_sha256_hex: string;
+  solver_pubkey_hex: string;
+  operator_pubkey_hex: string;
+  flag_commitment_hex: string;
+  buyer_enc_pk_hex: string;
+  outcome_byte: string;
+  message_hex: string;
+  signature_b64: string;
+}
+function loadVerdictVector(): VerdictVector {
+  const p = path.resolve(repoRoot(), "test-vectors/verdict_v4.json");
+  return JSON.parse(fs.readFileSync(p, "utf8")) as VerdictVector;
 }
 import assert from "node:assert/strict";
 import * as crypto from "crypto";
@@ -145,19 +176,60 @@ function depsWith(
 // (T1) verdict wire reconstruction — the bytes everything else stands on
 // ---------------------------------------------------------------------------
 
-test("(T1) SCB_VERDICT_V4 wire is exactly 207 bytes with the documented layout", () => {
-  const { bounty, job } = bountyFixture();
-  const msg = reconstructMessage(job, bounty, true);
+test("(T1) SCB_VERDICT_V4: TS reconstruction == canonical vector, field by field", () => {
+  const vec = loadVerdictVector();
+  const wire = Buffer.from(vec.message_hex, "hex");
+  const tag = Buffer.from(vec.tag_ascii, "ascii");
 
-  assert.equal(msg.length, VERDICT_MSG_LEN);
-  assert.ok(msg.subarray(0, 14).equals(Buffer.from("SCB_VERDICT_V4", "ascii")));
-  assert.ok(msg.subarray(14, 46).equals(job.bountyPda.toBuffer()));
-  assert.ok(msg.subarray(46, 78).equals(Buffer.from(bounty.envBlobSha256)));
-  assert.ok(msg.subarray(78, 110).equals(Buffer.from(bounty.currentSubmission!.exploitSha256)));
-  assert.ok(msg.subarray(110, 142).equals(bounty.currentSubmission!.solver.toBuffer()));
-  assert.ok(msg.subarray(142, 174).equals(Buffer.from(bounty.flagCommitment)));
-  assert.ok(msg.subarray(174, 206).equals(Buffer.from(bounty.buyerEncPk))); // V4
-  assert.equal(msg[206], 1); // outcome PASS
+  // Rebuild the message from the vector's own witness fields — the same way
+  // the Rust golden test does. No hardcoded lengths or offsets here.
+  const b58decode = (s: string): Buffer => {
+    let n = 0n;
+    for (const ch of s) {
+      const idx = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz".indexOf(ch);
+      if (idx < 0) throw new Error("bad b58");
+      n = n * 58n + BigInt(idx);
+    }
+    return Buffer.from(n.toString(16).padStart(64, "0"), "hex");
+  };
+  const pda = b58decode(vec.bounty_pda_b58);
+  const rebuilt = buildVerdictMessage({
+    bountyPda: pda,
+    envBlobSha256: Buffer.from(vec.env_blob_sha256_hex, "hex"),
+    exploitSha256: Buffer.from(vec.exploit_sha256_hex, "hex"),
+    solver: Buffer.from(vec.solver_pubkey_hex, "hex"),
+    flagCommitment: Buffer.from(vec.flag_commitment_hex, "hex"),
+    buyerEncPk: Buffer.from(vec.buyer_enc_pk_hex, "hex"),
+    outcome: true,
+  });
+
+  assert.equal(rebuilt.length, VERDICT_MSG_LEN); // builder agrees with fixture
+  assert.equal(wire.length, VERDICT_MSG_LEN);
+  assert.deepEqual(rebuilt, wire);
+
+  // And the pipeline's reconstruction over a matching chain view agrees too.
+  const { bounty, job } = bountyFixture();
+  bounty.envBlobSha256 = new Uint8Array(Buffer.from(vec.env_blob_sha256_hex, "hex"));
+  bounty.flagCommitment = new Uint8Array(Buffer.from(vec.flag_commitment_hex, "hex"));
+  const solverPk = Buffer.from(vec.solver_pubkey_hex, "hex");
+  bounty.currentSubmission = {
+    ...(bounty.currentSubmission as NonNullable<BountyView["currentSubmission"]>),
+    exploitSha256: new Uint8Array(Buffer.from(vec.exploit_sha256_hex, "hex")),
+    solver: new PublicKey(solverPk),
+  };
+  job.bountyPda = new PublicKey(pda);
+  job.solver = new PublicKey(solverPk);
+  job.exploitSha256 = Buffer.from(vec.exploit_sha256_hex, "hex");
+  const msg = reconstructMessage(job, bounty, true);
+  assert.ok(msg.equals(wire));
+
+  // Field-by-field offsets derived from the tag length.
+  let off = 0;
+  assert.ok(msg.subarray(off, off + tag.length).equals(tag)); off += tag.length;
+  for (const f of [pda, Buffer.from(vec.env_blob_sha256_hex, "hex"), Buffer.from(vec.exploit_sha256_hex, "hex"), solverPk, Buffer.from(vec.flag_commitment_hex, "hex"), Buffer.from(vec.buyer_enc_pk_hex, "hex")]) {
+    assert.ok(msg.subarray(off, off + 32).equals(f)); off += 32;
+  }
+  assert.equal(msg[off], 1);
 });
 
 test("(T1b) buildVerdictMessage flips only the outcome byte between PASS/FAIL", () => {

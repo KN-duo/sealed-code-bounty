@@ -2,7 +2,7 @@ import nacl from "tweetnacl";
 import { PublicKey } from "@solana/web3.js";
 
 /**
- * Canonical SCB_VERDICT_V3 wire — must stay byte-identical to
+ * Canonical SCB_VERDICT_V4 wire — must stay byte-identical to
  * programs/sealed-code-bounty/src/constants.rs + the recomputation in
  * instructions/resolve_with_attestation.rs:
  *   tag(14) || bounty_pda(32) || env_blob_sha256(32) || exploit_sha256(32)

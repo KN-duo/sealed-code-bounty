@@ -18,12 +18,6 @@ pub enum ErrorCode {
     NoSubmission,
     #[msg("Solver account does not match the recorded submitter")]
     SolverMismatch,
-    #[msg("Verdict outcome byte does not match the resolution argument")]
-    InvalidOutcome,
-    #[msg("Verdict exploit_sha256 does not match the pending submission")]
-    SubmissionMismatch,
-    #[msg("Verdict flag_commitment does not match the bounty commitment")]
-    FlagCommitmentMismatch,
     #[msg("No valid Ed25519 verdict instruction over the expected message found in this transaction")]
     MissingSigVerify,
     #[msg("Verdict signer is not a configured operator")]
@@ -40,6 +34,10 @@ pub enum ErrorCode {
     MissingPayoutAccounts,
     #[msg("FAIL resolutions must not carry Receipt or Reveal accounts")]
     UnexpectedPayoutAccounts,
+    #[msg("PASS reveals must carry exactly one carrier: inline ciphertext XOR https URL")]
+    InvalidRevealCarrier,
+    #[msg("Reveal URL must start with https://")]
+    InvalidRevealUrl,
     #[msg("Force unlock delay has not elapsed yet")]
     ForceUnlockTooEarly,
     #[msg("Force unlock delay must be greater than zero")]

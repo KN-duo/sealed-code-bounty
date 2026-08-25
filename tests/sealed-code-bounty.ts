@@ -132,6 +132,18 @@ describe("sealed-code-bounty v2", () => {
     await provider.sendAndConfirm(tx, [relayer]);
   }
 
+  /** Idempotently pins the test operator key so verdict-signing tests are
+   * individually runnable via mocha --grep (audit P2-12). */
+  async function ensureOperatorArmed() {
+    const c = await program.account.config.fetch(configPda);
+    if (!c.operators.some((k: anchor.web3.PublicKey) => k.equals(operator.publicKey))) {
+      await program.methods
+        .setOperators([operator.publicKey], 1, [...ENC_PK], new BN(DEFAULT_UNLOCK_DELAY_S))
+        .accountsStrict({ authority: payer.publicKey, config: configPda })
+        .rpc();
+    }
+  }
+
   /** Polls until the chain clock passes `ts`, poking slots while stuck. */
   async function waitUntilChainPast(ts: number, maxMs = 60000) {
     const start = Date.now();
@@ -508,6 +520,7 @@ describe("sealed-code-bounty v2", () => {
 
   // ---------------------------------------------------------------------
   it("(4) resolve PASS pays prize+bond atomically and writes Receipt+Reveal", async () => {
+    await ensureOperatorArmed();
     const id = nextBountyId++;
     await createBounty(id);
     await submitExploit(id);
@@ -538,61 +551,71 @@ describe("sealed-code-bounty v2", () => {
   });
 
   it("(4a) second resolve on a Resolved bounty rejects", async () => {
-    const id = nextBountyId - 1; // the bounty resolved above
+    await ensureOperatorArmed();
+    // Own fixture so this test runs standalone (-f) too.
+    const id = nextBountyId++;
+    await createBounty(id);
+    await submitExploit(id);
+    await resolve({ bountyId: id, outcome: true });
     await expectError(resolve({ bountyId: id, outcome: true }), "NotAwaitingResolution");
   });
 
   // ---------------------------------------------------------------------
-  // Negatives share one pending submission; none of them mutate state.
-  let negBountyId = 0;
-  before(async () => {
-    negBountyId = nextBountyId++;
-    await createBounty(negBountyId);
-    await submitExploit(negBountyId);
-  });
+  /** Fresh AwaitingResolution bounty per test (isolation for -f runs). */
+  async function pendingBounty(): Promise<number> {
+    const id = nextBountyId++;
+    await createBounty(id);
+    await submitExploit(id);
+    return id;
+  }
 
   it("(5a) verdict binding wrong exploit_sha256 fails", async () => {
+    const id = await pendingBounty();
     const bad = Buffer.alloc(32, 99);
     await expectError(
-      resolve({ bountyId: negBountyId, outcome: true, exploitHash: bad }),
+      resolve({ bountyId: id, outcome: true, exploitHash: bad }),
       "MissingSigVerify"
     );
   });
 
   it("(5b) verdict binding wrong env_blob_sha256 fails (V3 hole closed)", async () => {
+    const id = await pendingBounty();
     const bad = Buffer.alloc(32, 98);
     await expectError(
-      resolve({ bountyId: negBountyId, outcome: true, envHash: bad }),
+      resolve({ bountyId: id, outcome: true, envHash: bad }),
       "MissingSigVerify"
     );
   });
 
   it("(5c) verdict binding wrong flag_commitment fails", async () => {
+    const id = await pendingBounty();
     const bad = Buffer.alloc(32, 97);
     await expectError(
-      resolve({ bountyId: negBountyId, outcome: true, flagCommitment: bad }),
+      resolve({ bountyId: id, outcome: true, flagCommitment: bad }),
       "MissingSigVerify"
     );
   });
 
   it("(5d) non-operator signer fails", async () => {
+    const id = await pendingBounty();
     const impostor = anchor.web3.Keypair.generate();
     await expectError(
-      resolve({ bountyId: negBountyId, outcome: true, operatorKp: impostor }),
+      resolve({ bountyId: id, outcome: true, operatorKp: impostor }),
       "UnauthorizedOperator"
     );
   });
 
   it("(5e) missing Ed25519 instruction fails", async () => {
+    const id = await pendingBounty();
     await expectError(
-      resolve({ bountyId: negBountyId, outcome: true, includeEd25519Ix: false }),
+      resolve({ bountyId: id, outcome: true, includeEd25519Ix: false }),
       "MissingSigVerify"
     );
   });
 
   // ---------------------------------------------------------------------
   it("(6) resolve FAIL refunds bond, wipes slot, allows resubmit", async () => {
-    const id = negBountyId; // still AwaitingResolution from the negatives
+    const id = await pendingBounty();
     const bountyKey = bountyPda(buyer.publicKey, id);
     const before = await balance(solver.publicKey);
 
@@ -712,8 +735,77 @@ describe("sealed-code-bounty v2", () => {
     );
   });
   // ---------------------------------------------------------------------
+  // Audit P2-9: reveal carrier mutual exclusion + https requirement.
+  it("(P2-9a) PASS with BOTH carriers reverts (InvalidRevealCarrier)", async () => {
+    await ensureOperatorArmed();
+    const id = nextBountyId++;
+    await createBounty(id);
+    await submitExploit(id);
+    const bountyKey = bountyPda(buyer.publicKey, id);
+    const message = buildVerdictMessage(
+      bountyKey, ENV_HASH, EXPLOIT_HASH,
+      solver.publicKey.toBuffer(), FLAG_COMMITMENT, true
+    );
+    const signature = nacl.sign.detached(message, operator.secretKey);
+    const ed25519Ix = anchor.web3.Ed25519Program.createInstructionWithPublicKey({
+      publicKey: operator.publicKey.toBytes(), signature, message,
+    });
+    const sha = crypto.createHash("sha256").update(CIPHERTEXT).digest();
+    const passIx = await program.methods
+      .resolveWithAttestation(new BN(id), true, CIPHERTEXT, "https://arweave.net/abc", sha)
+      .accountsStrict({
+        relayer: relayer.publicKey, config: configPda, bounty: bountyKey,
+        solver: solver.publicKey, receipt: receiptPda(bountyKey), reveal: revealPda(bountyKey),
+        ed25519Program: ED25519_PROGRAM_ID, instructions: INSTRUCTIONS_SYSVAR_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .instruction();
+    const tx = new anchor.web3.Transaction().add(ed25519Ix, passIx);
+    try {
+      await provider.sendAndConfirm(tx, [relayer]);
+      throw new Error("expected InvalidRevealCarrier");
+    } catch (e: any) {
+      assert.match(String(e?.message ?? e), /InvalidRevealCarrier/);
+    }
+  });
+
+  it("(P2-9b) PASS with plain-http URL reverts (InvalidRevealUrl)", async () => {
+    await ensureOperatorArmed();
+    const id = nextBountyId++;
+    await createBounty(id);
+    await submitExploit(id);
+    const bountyKey = bountyPda(buyer.publicKey, id);
+    const message = buildVerdictMessage(
+      bountyKey, ENV_HASH, EXPLOIT_HASH,
+      solver.publicKey.toBuffer(), FLAG_COMMITMENT, true
+    );
+    const signature = nacl.sign.detached(message, operator.secretKey);
+    const ed25519Ix = anchor.web3.Ed25519Program.createInstructionWithPublicKey({
+      publicKey: operator.publicKey.toBytes(), signature, message,
+    });
+    const urlSha = crypto.createHash("sha256").update("remote-bytes").digest();
+    const passIx = await program.methods
+      .resolveWithAttestation(new BN(id), true, Buffer.alloc(0), "http://insecure.test/x", urlSha)
+      .accountsStrict({
+        relayer: relayer.publicKey, config: configPda, bounty: bountyKey,
+        solver: solver.publicKey, receipt: receiptPda(bountyKey), reveal: revealPda(bountyKey),
+        ed25519Program: ED25519_PROGRAM_ID, instructions: INSTRUCTIONS_SYSVAR_ID,
+        systemProgram: anchor.web3.SystemProgram.programId,
+      })
+      .instruction();
+    const tx = new anchor.web3.Transaction().add(ed25519Ix, passIx);
+    try {
+      await provider.sendAndConfirm(tx, [relayer]);
+      throw new Error("expected InvalidRevealUrl");
+    } catch (e: any) {
+      assert.match(String(e?.message ?? e), /InvalidRevealUrl/);
+    }
+  });
+
+  // ---------------------------------------------------------------------
   // Audit L1: FAIL verdicts must not carry payout accounts.
   it("(L1) FAIL resolve with receipt/reveal accounts reverts", async () => {
+    await ensureOperatorArmed();
     const id = nextBountyId++;
     await createBounty(id);
     await submitExploit(id);

@@ -26,7 +26,7 @@ export interface VerifyRequest {
 
 export interface VerifyResponse {
   outcome: boolean;
-  /** base64 ed25519 signature over the exact 175-byte SCB_VERDICT_V3 wire. */
+  /** base64 ed25519 signature over the canonical verdict wire (see test-vectors/verdict_v4.json). */
   sig: string;
   /** base64 sealed-box ciphertext (PASS only; empty/absent on FAIL). */
   reveal_ciphertext?: string;

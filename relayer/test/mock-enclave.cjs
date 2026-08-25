@@ -1,5 +1,5 @@
 // Minimal stand-in for the verifier enclave's /internal/verify endpoint.
-// TEST HARNESS ONLY: signs canned SCB_VERDICT_V3 verdicts with a throwaway
+// TEST HARNESS ONLY: signs canned SCB_VERDICT_V4 verdicts with a throwaway
 // keypair so the relayer pipeline can be exercised end-to-end without a TEE.
 //
 // Usage (programmatic, CommonJS):

@@ -23,6 +23,13 @@ pub struct SetOperators<'info> {
     pub config: Account<'info, Config>,
 }
 
+// OPERATIONAL CONSTRAINT (audit P2-11): rotating the operator set while
+// bounties sit in AwaitingResolution strands their in-flight verdicts — the
+// enclave that signed them may no longer be pinned after rotation, so
+// relayers cannot land those verdicts and hunters must wait for
+// force_unlock_submission. OPS RUNBOOK: drain pending resolutions (or accept
+// the force-unlock window) BEFORE rotating keys. No logic change in v1;
+// documented here so the constraint survives refactors.
 pub fn handle_set_operators(
     ctx: Context<SetOperators>,
     operators: Vec<Pubkey>,

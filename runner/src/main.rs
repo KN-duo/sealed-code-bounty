@@ -4,7 +4,7 @@
 //! inside a Nitro Enclave. It is the only place where the master flag secret,
 //! the buyer's environment, and the hunter's plaintext exploit coexist. Its
 //! only egress is short JSON responses whose security-critical fields are
-//! enclave signatures over canonical 175-byte verdict messages.
+//! enclave signatures over canonical 207-byte verdict messages.
 
 use scb_runner::{config::Config, routes, state::AppState};
 use std::sync::Arc;

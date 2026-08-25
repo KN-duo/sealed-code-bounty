@@ -22,7 +22,6 @@ pub struct Config {
     /// Enclave X25519 secret key — hunters seal exploit uploads to the
     /// matching public key pinned in Config.enclave_enc_pk on-chain.
     pub enclave_enc_secret: crypto_box::SecretKey,
-    #[allow(dead_code)] // wired into verify once blob pulling lands
     pub sandbox: Arc<dyn SandboxExecutor + Send + Sync>,
 }
 

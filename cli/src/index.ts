@@ -14,7 +14,7 @@ import {
 } from "./docker";
 import { emitManifest, uploadTarball, FLAG_PLACEHOLDER, Manifest } from "./manifest";
 import { renderCompose } from "./compose";
-import { run, sanitizeName, shortHash } from "./util";
+import { sanitizeName, shortHash } from "./util";
 
 const program = new Command();
 
@@ -174,5 +174,3 @@ main()
     process.exit(1);
   });
 
-// keep commander's help exit semantics tidy
-void run;

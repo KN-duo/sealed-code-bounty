@@ -176,7 +176,7 @@ export function prepareVerdict(
   const message = reconstructMessage(job, bounty, resp.outcome);
   if (!verifyDetached(message, resp.sig, operatorPubkey)) {
     throw new PermanentError(
-      "enclave signature failed LOCAL verification over reconstructed SCB_VERDICT_V3 bytes"
+      "enclave signature failed LOCAL verification over reconstructed SCB_VERDICT_V4 bytes"
     );
   }
   const ciphertext =
