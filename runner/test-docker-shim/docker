@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# ---------------------------------------------------------------------------
+# TEST HARNESS ONLY — `docker` stand-in for the runner's DockerCli executor.
+# Records every invocation into $SCB_SHIM_STATE/cmd.log (one line each, in
+# order) so tests can prove argument arrays AND cleanup ordering without a
+# daemon. Honors exactly the subcommands DockerCli uses:
+#   network create --internal NAME
+#   load -i FILE                       -> echoes "Loaded image: scb/target:test"
+#   run [flags] IMAGE [CMD...]         -> -d variant records detached start;
+#                                         exploit variant optionally sleeps
+#                                         ($SCB_SHIM_EXPLOIT_SLEEP secs) then
+#                                         prints $SCB_SHIM_FLAG_OUT
+#   rm -f NAME                         -> recorded (cleanup ordering proof)
+# ---------------------------------------------------------------------------
+set -u
+STATE="${SCB_SHIM_STATE:-/tmp/scb-runner-shim}"
+mkdir -p "$STATE"
+
+log() { printf '%s\n' "$*" >> "$STATE/cmd.log"; }
+
+cmd="${1:-}"; shift || true
+
+case "$cmd" in
+  --version) echo "Docker version 27.0-shim, build runnerharness"; exit 0 ;;
+  network)
+    # post-shift: $1=create $2=--internal $3=NAME
+    log "network-create $3"
+    echo "$4"
+    exit 0 ;;
+  load)
+    # load -i FILE
+    log "load $2"
+    echo "Loaded image: scb/target:test"
+    exit 0 ;;
+  run)
+    name=""; detached=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --name) name="$2"; shift 2 ;;
+        -d) detached=1; shift ;;
+        --rm) shift ;;
+        *) shift ;;
+      esac
+    done
+    if [ "$detached" = "1" ]; then
+      log "run-detached $name"
+      echo "sha256:$(printf '%s' "$name" | sha256sum | cut -c1-32)"
+      exit 0
+    fi
+    log "run-exploit $name"
+    if [ -n "${SCB_SHIM_EXPLOIT_SLEEP:-}" ]; then sleep "$SCB_SHIM_EXPLOIT_SLEEP"; fi
+    printf '%s\n' "${SCB_SHIM_FLAG_OUT:-pwn{noop}}"
+    exit 0 ;;
+  rm)
+    # post-shift: $1=rm $2=-f $3=NAME
+    name="$2"
+    log "rm $name"
+    exit 0 ;;
+  *)
+    echo "shim: unsupported subcommand: $cmd $*" >&2
+    exit 64 ;;
+esac

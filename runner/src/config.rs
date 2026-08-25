@@ -19,6 +19,8 @@ pub struct Config {
     pub rate_limit_max: u32,
     /// Rate limit window in seconds (default config: 5 per hour).
     pub rate_limit_window_secs: u64,
+    /// Loopback-only docker network shared by target+exploit containers.
+    pub network: String,
     /// Enclave X25519 secret key — hunters seal exploit uploads to the
     /// matching public key pinned in Config.enclave_enc_pk on-chain.
     pub enclave_enc_secret: crypto_box::SecretKey,
@@ -43,6 +45,7 @@ impl std::fmt::Debug for Config {
 /// Raw option strings for the programmatic constructor.
 pub struct BuildOpts {
     pub port: Option<String>,
+    pub network: Option<String>,
     pub master_hex: Option<String>,
     pub enc_secret_hex: Option<String>,
     pub work_dir: Option<String>,
@@ -63,6 +66,7 @@ impl Config {
             blob_ttl: std::env::var("SCB_BLOB_TTL_SECS").ok(),
             rate_max: std::env::var("SCB_RATE_LIMIT_MAX").ok(),
             rate_window: std::env::var("SCB_RATE_LIMIT_WINDOW_SECS").ok(),
+            network: Some(std::env::var("SCB_NETWORK").unwrap_or_else(|_| "scb-loopback".into())),
         })
     }
 
@@ -77,6 +81,7 @@ impl Config {
             blob_ttl,
             rate_max,
             rate_window,
+            network,
         } = o;
         let port = match port {
             Some(v) => v.parse::<u16>().map_err(|_| "PORT must be a u16")?,
@@ -113,6 +118,14 @@ impl Config {
             u32::try_from(parse_num(&rate_max, 5, "SCB_RATE_LIMIT_MAX")?).map_err(|_| "rate limit too large")?;
         let rate_limit_window_secs = parse_num(&rate_window, 60 * 60, "SCB_RATE_LIMIT_WINDOW_SECS")?;
 
+        // Task 9: SCB_SANDBOX=docker|stub (default stub).
+        let sandbox_name = std::env::var("SCB_SANDBOX").unwrap_or_else(|_| "stub".into());
+        let sandbox: Arc<dyn SandboxExecutor + Send + Sync> = match sandbox_name.as_str() {
+            "docker" => Arc::new(crate::sandbox::DockerCli::from_env()?),
+            "stub" => Arc::new(crate::sandbox::StubSandbox),
+            other => return Err(format!("SCB_SANDBOX must be docker|stub, got \"{other}\"")),
+        };
+
         Ok(Self {
             port,
             master_secret,
@@ -122,7 +135,8 @@ impl Config {
             blob_ttl_secs,
             rate_limit_max,
             rate_limit_window_secs,
-            sandbox: Arc::new(crate::sandbox::StubSandbox),
+            network: network.unwrap_or_else(|| "scb-loopback".into()),
+            sandbox,
         })
     }
 }

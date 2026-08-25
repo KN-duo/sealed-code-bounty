@@ -29,6 +29,7 @@ fn make_app(
             .collect();
     let get = |k: &str| -> Option<String> { envmap.get(k).cloned() };
     let cfg = Config::build(scb_runner::config::BuildOpts {
+        network: get("SCB_NETWORK").or_else(|| Some("scb-loopback".into())),
         port: get("PORT"),
         master_hex: Some(MASTER_HEX.into()),
         enc_secret_hex: Some(ENC_SECRET_HEX.into()),

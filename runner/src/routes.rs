@@ -13,6 +13,7 @@ use base64::Engine as _;
 use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 pub const FLAG_PLACEHOLDER: &str = "{{FLAG}}";
@@ -48,6 +49,23 @@ pub struct UploadResponse {
 pub struct VerifyRequest {
     pub bounty_pda: String,
     pub claimed_chain_view: ChainView,
+    /// Local path (or https URL, typed-unsupported for now) of the packed
+    /// environment tarball. The runner loads + verifies its hash.
+    #[serde(default)]
+    pub env_blob_path: Option<String>,
+    /// Target image ref when the blob is already loaded into the daemon.
+    #[serde(default)]
+    pub target_image: Option<String>,
+    /// Manifest entrypoint+cmd tokens (for D13 setarch wrapping).
+    #[serde(default)]
+    pub target_entrypoint: Vec<String>,
+    /// tcp_service port from the manifest.
+    #[serde(default = "default_port")]
+    pub target_port: u16,
+}
+
+fn default_port() -> u16 {
+    1337
 }
 
 /// Mirrors relayer/src/enclave-types.ts `VerifyResponse` exactly.
@@ -250,12 +268,19 @@ pub async fn verify(
         .ok_or_else(|| ApiError::BadRequest("stored solver pubkey invalid".into()))?;
 
     // ---- sandbox execution (typed Unsupported => HTTP 501) -----------------
+    let rootfs_dir = state.config().work_dir.join(format!("rootfs-{receipt_hex}"));
+    let work_dir = state.config().work_dir.join(format!("work-{receipt_hex}"));
+    let env_blob_path = req.env_blob_path.as_deref().map(Path::new);
     let run_params = RunParams {
-        rootfs_dir: &state.config().work_dir.join(format!("rootfs-{receipt_hex}")),
-        work_dir: &state.config().work_dir.join(format!("work-{receipt_hex}")),
+        rootfs_dir: &rootfs_dir,
+        work_dir: &work_dir,
         exploit_py: &record.plaintext,
-        target_host: "127.0.0.1".to_string(),
-        target_port: 1337,
+        env_blob_path,
+        target_image: req.target_image.clone(),
+        target_entrypoint: req.target_entrypoint.clone(),
+        target_host: "target".to_string(),
+        target_network: state.config().network.clone(),
+        target_port: req.target_port,
         timeout_secs: 60,
         memory_mb: 512,
         cpus: 1.0,

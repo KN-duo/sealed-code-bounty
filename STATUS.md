@@ -10,8 +10,8 @@ with commit hashes. If this file and the build plan disagree, this file wins.
 | 0 — Cleanup & foundations | Inco POC removed, docs pivoted to Nitro, tests localnet-first | **DONE** | `4799431`, `8dfbd5e` |
 | 1 — Solana program v2 | Config/Bounty-v2/Receipt/Reveal; 7 instructions incl. `force_unlock_submission`; SCB_VERDICT_V3 with `env_blob_sha256` binding; refundable bond; post-deadline submit guard | **DONE** — `anchor test`: 24 passing / 0 failing | `3c5d48d`, `b44f6f8`, fixes `49a7043` + `a3d863f`, suite `71803b3`, reviewed merge `5cef7d6` |
 | 2 — Packaging (`scb-pack`) | docker build → `/flag` placeholder gate → save│gzip → sha256-pinned tarball → manifest v2 → dev-plane compose w/ D13 setarch parity | **DONE except R2 upload** (`uploadTarball()` is a typed stub; manifests reference the local relative tarball path) | `f4391a6`; shim-tested end-to-end (`test/docker-shim`), real-docker path reasoned |
-| 3 — Verifier pipeline | Rust runner crate: flag derivation, intent gate, safe unpack, redaction D11, abuse controls, verdict signing V3 + golden cross-language fixture | **DONE except real sandbox execution** (`SandboxExecutor::DockerCli` composes real arg-arrays but is not wired to blob pulling/live targets; `StubSandbox` answers typed 501) | `6d33857` |
-| 4 — Relayer + wiring | Event ingestion, dedupe, enclave client w/ backoff, local sig pre-check, atomic `[Ed25519SigVerify, resolve]` landing | **PARTIAL** — complete against the mock enclave (`relayer/test/mock-enclave.cjs`, 6/6 tests); the LIVE loop still needs the runner's real sandbox (phase-3 gap) and real enclave operator keys pinned via `set_operators` | `7468773` |
+| 3 — Verifier pipeline | Rust runner crate: flag derivation, intent gate, safe unpack, redaction D11, abuse controls, verdict signing V4 + golden cross-language fixture; **sandbox execution REAL (shim-tested)** — DockerCli loads env tarballs, boots target on loopback-only network w/ D13 setarch parity, runs exploit container w/ hard timeout + guaranteed cleanup; daemon-runtime behaviour REASONED (no docker in CI) | `6d33857`, sandbox `95ad743`+ |
+| 4 — Relayer + wiring | Event ingestion, dedupe, enclave client w/ backoff, local sig pre-check, atomic `[Ed25519SigVerify, resolve]` landing | **PARTIAL** — complete against the mock enclave (`relayer/test/mock-enclave.cjs`, 6/6 tests); the LIVE loop still needs real enclave operator keys (runner sandbox now real/shim-tested) pinned via `set_operators` | `7468773` |
 | 5 — Dev plane hosting | Browser-terminal sandbox service | Untouched by design (review P1-9: malware-hosting liability). Packager emits local `docker-compose.yml` instead — hunters run replicas on their own machines | — |
 | 6 — Frontend v2 | Buyer/hunter flows over new IDL | Untouched — frontend skeleton still targets v1 instruction names; needs an IDL refresh pass once phase 1 UI work starts | — |
 | 7 — Nitro envelope | EIF packaging, attestation ceremony, KMS-conditioned master secret | Untouched — deliberately last (BUILD_PLAN §10 "don't start with the TEE"); runner was built container-first so this is an envelope step | — |
@@ -50,7 +50,7 @@ operators ed25519 introspection. Tests: 24 passing on localnet.
   rootfs unpack (size/file-count/traversal/symlink/hardlink); per-wallet +
   per-IP token buckets; global storage cap → 503; TTL sweeper; chain-view
   divergence → 409; verdict signing over exact 175-byte wire.
-- STUB: sandbox execution (`StubSandbox` → HTTP 501 typed).
+- Sandbox execution: REAL via DockerCli (shim-tested: arg arrays, mounts, setarch prefix, timeout kill + cleanup ordering proven against test-docker-shim). Daemon-runtime behaviour REASONED. StubSandbox remains default until SCB_SANDBOX=docker is selected with a live daemon.
 - Golden cross-language vector committed:
   `runner/tests/golden/verdict_v3.json` (TS-side nacl verification proven by
   reviewer).
