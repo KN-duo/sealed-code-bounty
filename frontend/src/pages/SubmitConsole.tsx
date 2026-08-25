@@ -19,7 +19,7 @@ import { HashBadge } from "../components/ui/HashBadge";
 import { Link } from "../router";
 import { useBounty, useConfig } from "../hooks/useData";
 import { useProgram } from "../hooks/useProgram";
-import { useToast } from "../components/ui/Toast";
+import { useToast } from "../hooks/useToast";
 import {
   buildSubmitIntentMessage,
   sealTo,

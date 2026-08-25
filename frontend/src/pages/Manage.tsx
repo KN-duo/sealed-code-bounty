@@ -17,7 +17,7 @@ import { Link } from "../router";
 import { formatDate, isPast } from "../lib/format";
 import { cancelExpiredBounty, closeResolvedBounty, txErrorMessage } from "../lib/tx";
 import { loadReveal } from "../lib/reveal";
-import { useToast } from "../components/ui/Toast";
+import { useToast } from "../hooks/useToast";
 import type { Bounty } from "../lib/types";
 import type { X25519Keypair } from "../lib/crypto";
 import type { RevealResult } from "../lib/reveal";

@@ -1,7 +1,8 @@
 import type { ReactNode } from "react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { ShieldHalf } from "lucide-react";
-import { Link, useHashPath } from "../../router";
+import { Link } from "../../router";
+import { useHashPath } from "../../router/core";
 import { ClusterBadge } from "./ClusterBadge";
 
 const NAV = [

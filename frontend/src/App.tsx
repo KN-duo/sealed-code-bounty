@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useHashPath, matchPath } from "./router";
+import { useHashPath, matchPath } from "./router/core";
 import { AppShell } from "./components/layout/AppShell";
 import { Board } from "./pages/Board";
 import { Leaderboard } from "./pages/Leaderboard";

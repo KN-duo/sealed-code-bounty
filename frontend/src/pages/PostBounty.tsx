@@ -27,7 +27,7 @@ import type { ManifestForm, TargetKind } from "../lib/manifest";
 import { bountyPda } from "../lib/pda";
 import { sealBounty } from "../lib/runner";
 import { createBounty, txErrorMessage } from "../lib/tx";
-import { useToast } from "../components/ui/Toast";
+import { useToast } from "../hooks/useToast";
 
 type Step = "key" | "manifest" | "review" | "done";
 

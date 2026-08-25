@@ -72,7 +72,7 @@ export function Board() {
         state={state}
         onRetry={reload}
         emptyTitle="No bounties yet"
-        emptyMessage="Be the first to post one — connect a wallet and open a bounty against your target."
+        emptyMessage="Be the first to post one — open a bounty against your target and let hunters try to break it."
       >
         {(bounties) => {
           const filtered = sortBounties(

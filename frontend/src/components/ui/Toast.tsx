@@ -1,17 +1,13 @@
-import { createContext, useCallback, useContext, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import type { ReactNode } from "react";
+import { ToastContext } from "./toastContext";
+import type { ToastKind } from "./toastContext";
 
-type ToastKind = "success" | "error" | "info";
 interface Toast {
   id: number;
   kind: ToastKind;
   message: string;
 }
-interface ToastApi {
-  push: (message: string, kind?: ToastKind) => void;
-}
-
-const ToastContext = createContext<ToastApi | null>(null);
 
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toasts, setToasts] = useState<Toast[]>([]);
@@ -36,10 +32,4 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       </div>
     </ToastContext.Provider>
   );
-}
-
-export function useToast(): ToastApi {
-  const ctx = useContext(ToastContext);
-  if (!ctx) throw new Error("useToast must be used within ToastProvider");
-  return ctx;
 }
