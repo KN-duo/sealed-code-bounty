@@ -9,7 +9,7 @@ Stack: React 19 + Vite 8 + TS 6 + @solana/wallet-adapter + @solana/web3.js +
 | Gate | Command | Result |
 |------|---------|--------|
 | Types | `npm run build` (`tsc -b`) | 0 errors |
-| Bundle | `vite build` | ok (~821 kB / 245 kB gz single chunk) |
+| Bundle | `vite build` | ok (~1.31 MB / 415 kB gz single chunk) |
 | Lint | `npm run lint` (oxlint) | 0 errors, **0 warnings** |
 | Serve, services OFF | `vite preview` / `vite dev` | HTTP 200 on `/`, all four async states degrade gracefully |
 
@@ -117,7 +117,7 @@ hash router in `src/router`.
    existed anywhere). After the next `anchor build`, replace `frontend/src/idl/*` with the real
    `target/idl` + `target/types` output and re-run gates; the generator lives in the job scratch
    dir for reference.
-3. **Bundle size.** Single ~821 kB chunk (wallet-adapter + web3 dominate). Fine for launch;
+3. **Bundle size.** Single ~1.31 MB chunk (wallet-adapter + web3 dominate). Fine for launch;
    route-level `import()` code-splitting is the obvious later win.
 4. **FAIL redacted_log.** The FAIL screen reports "rejected, slot reopened" from on-chain state.
    If the runner later exposes a redacted log endpoint, surface it there (no such endpoint is
