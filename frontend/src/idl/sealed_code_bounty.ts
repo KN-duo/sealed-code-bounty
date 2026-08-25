@@ -1,20 +1,457 @@
-/**
- * Program IDL in camelCase format in order to be used in JS/TS.
- *
- * Note that this is only a type helper and is not the actual IDL. The original
- * IDL can be found at `target/idl/sealed_code_bounty.json`.
- */
-export type SealedCodeBounty = {
+// AUTO-GENERATED from programs/sealed-code-bounty/src (v2). Do not edit by hand.
+// Regenerate after any program change by copying target/idl + target/types.
+// Discriminators are sha256 prefixes (Anchor convention).
+
+export const IDL = {
   "address": "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V",
   "metadata": {
-    "name": "sealedCodeBounty",
-    "version": "0.1.0",
+    "name": "sealed_code_bounty",
+    "version": "2.0.0",
     "spec": "0.1.0",
-    "description": "Created with Anchor"
+    "description": "SealedCodeBounty v2 - sealed exploit bounty escrow with enclave-attested verdicts"
   },
   "instructions": [
     {
-      "name": "cancelExpiredBounty",
+      "name": "initialize_config",
+      "discriminator": [
+        208,
+        127,
+        21,
+        1,
+        194,
+        190,
+        196,
+        70
+      ],
+      "accounts": [
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "platform_authority",
+          "type": "pubkey"
+        },
+        {
+          "name": "enclave_enc_pk",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "submission_bond_lamports",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_operators",
+      "discriminator": [
+        78,
+        166,
+        85,
+        72,
+        92,
+        55,
+        73,
+        216
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "operators",
+          "type": {
+            "vec": "pubkey"
+          }
+        },
+        {
+          "name": "threshold",
+          "type": "u8"
+        },
+        {
+          "name": "enclave_enc_pk",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "force_unlock_delay_s",
+          "type": "i64"
+        }
+      ]
+    },
+    {
+      "name": "create_bounty",
+      "discriminator": [
+        122,
+        90,
+        14,
+        143,
+        8,
+        125,
+        200,
+        2
+      ],
+      "accounts": [
+        {
+          "name": "buyer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bounty",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  98,
+                  111,
+                  117,
+                  110,
+                  116,
+                  121
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "buyer"
+              },
+              {
+                "kind": "arg",
+                "path": "bounty_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        },
+        {
+          "name": "prize_lamports",
+          "type": "u64"
+        },
+        {
+          "name": "deadline",
+          "type": "i64"
+        },
+        {
+          "name": "manifest_sha256",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "env_blob_sha256",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "flag_commitment",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        },
+        {
+          "name": "buyer_enc_pk",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "submit_exploit",
+      "discriminator": [
+        207,
+        52,
+        174,
+        188,
+        110,
+        249,
+        40,
+        156
+      ],
+      "accounts": [
+        {
+          "name": "solver",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bounty",
+          "writable": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        },
+        {
+          "name": "blob_url",
+          "type": "string"
+        },
+        {
+          "name": "exploit_sha256",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "resolve_with_attestation",
+      "discriminator": [
+        46,
+        12,
+        117,
+        47,
+        238,
+        194,
+        34,
+        208
+      ],
+      "accounts": [
+        {
+          "name": "relayer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "config",
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  111,
+                  110,
+                  102,
+                  105,
+                  103
+                ]
+              }
+            ]
+          }
+        },
+        {
+          "name": "bounty",
+          "writable": true
+        },
+        {
+          "name": "solver",
+          "writable": true
+        },
+        {
+          "name": "receipt",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "reveal",
+          "writable": true,
+          "optional": true
+        },
+        {
+          "name": "ed25519_program",
+          "address": "Ed25519SigVerify111111111111111111111111111"
+        },
+        {
+          "name": "instructions",
+          "address": "Sysvar1nstructions1111111111111111111111111"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        },
+        {
+          "name": "outcome",
+          "type": "bool"
+        },
+        {
+          "name": "reveal_ciphertext",
+          "type": "bytes"
+        },
+        {
+          "name": "ciphertext_url",
+          "type": "string"
+        },
+        {
+          "name": "ciphertext_sha256",
+          "type": {
+            "array": [
+              "u8",
+              32
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "close_resolved_bounty",
+      "discriminator": [
+        170,
+        97,
+        49,
+        175,
+        105,
+        227,
+        111,
+        153
+      ],
+      "accounts": [
+        {
+          "name": "caller",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "bounty",
+          "writable": true
+        },
+        {
+          "name": "buyer",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "bounty_id",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "cancel_expired_bounty",
       "discriminator": [
         71,
         236,
@@ -53,7 +490,7 @@ export type SealedCodeBounty = {
               },
               {
                 "kind": "arg",
-                "path": "bountyId"
+                "path": "bounty_id"
               }
             ]
           }
@@ -61,125 +498,47 @@ export type SealedCodeBounty = {
       ],
       "args": [
         {
-          "name": "bountyId",
+          "name": "bounty_id",
           "type": "u64"
         }
       ]
     },
     {
-      "name": "createBounty",
+      "name": "force_unlock_submission",
       "discriminator": [
-        122,
         90,
-        14,
-        143,
-        8,
-        125,
-        200,
-        2
+        46,
+        105,
+        60,
+        71,
+        39,
+        20,
+        180
       ],
       "accounts": [
         {
-          "name": "buyer",
+          "name": "caller",
           "writable": true,
           "signer": true
         },
         {
           "name": "bounty",
-          "writable": true,
+          "writable": true
+        },
+        {
+          "name": "config",
           "pda": {
             "seeds": [
               {
                 "kind": "const",
                 "value": [
-                  98,
+                  99,
                   111,
-                  117,
                   110,
-                  116,
-                  121
+                  102,
+                  105,
+                  103
                 ]
-              },
-              {
-                "kind": "account",
-                "path": "buyer"
-              },
-              {
-                "kind": "arg",
-                "path": "bountyId"
-              }
-            ]
-          }
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "bountyId",
-          "type": "u64"
-        },
-        {
-          "name": "testSuiteHash",
-          "type": {
-            "array": [
-              "u8",
-              32
-            ]
-          }
-        },
-        {
-          "name": "prizeAmount",
-          "type": "u64"
-        },
-        {
-          "name": "deadline",
-          "type": "i64"
-        }
-      ]
-    },
-    {
-      "name": "resolveSubmission",
-      "discriminator": [
-        97,
-        58,
-        160,
-        92,
-        75,
-        248,
-        14,
-        127
-      ],
-      "accounts": [
-        {
-          "name": "buyer",
-          "signer": true
-        },
-        {
-          "name": "bounty",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  117,
-                  110,
-                  116,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "buyer"
-              },
-              {
-                "kind": "arg",
-                "path": "bountyId"
               }
             ]
           }
@@ -191,85 +550,28 @@ export type SealedCodeBounty = {
       ],
       "args": [
         {
-          "name": "bountyId",
+          "name": "bounty_id",
           "type": "u64"
-        },
-        {
-          "name": "passed",
-          "type": "bool"
-        }
-      ]
-    },
-    {
-      "name": "submitSolution",
-      "discriminator": [
-        203,
-        233,
-        157,
-        191,
-        70,
-        37,
-        205,
-        0
-      ],
-      "accounts": [
-        {
-          "name": "solver",
-          "writable": true,
-          "signer": true
-        },
-        {
-          "name": "bounty",
-          "writable": true,
-          "pda": {
-            "seeds": [
-              {
-                "kind": "const",
-                "value": [
-                  98,
-                  111,
-                  117,
-                  110,
-                  116,
-                  121
-                ]
-              },
-              {
-                "kind": "account",
-                "path": "bounty.buyer",
-                "account": "bounty"
-              },
-              {
-                "kind": "arg",
-                "path": "bountyId"
-              }
-            ]
-          }
-        },
-        {
-          "name": "buyer",
-          "writable": true
-        },
-        {
-          "name": "systemProgram",
-          "address": "11111111111111111111111111111111"
-        }
-      ],
-      "args": [
-        {
-          "name": "bountyId",
-          "type": "u64"
-        },
-        {
-          "name": "solution",
-          "type": "string"
         }
       ]
     }
   ],
   "accounts": [
     {
-      "name": "bounty",
+      "name": "Config",
+      "discriminator": [
+        155,
+        12,
+        170,
+        224,
+        30,
+        250,
+        204,
+        130
+      ]
+    },
+    {
+      "name": "Bounty",
       "discriminator": [
         237,
         16,
@@ -280,24 +582,63 @@ export type SealedCodeBounty = {
         242,
         234
       ]
+    },
+    {
+      "name": "Receipt",
+      "discriminator": [
+        39,
+        154,
+        73,
+        106,
+        80,
+        102,
+        145,
+        153
+      ]
+    },
+    {
+      "name": "Reveal",
+      "discriminator": [
+        251,
+        170,
+        147,
+        35,
+        234,
+        108,
+        14,
+        149
+      ]
     }
   ],
   "events": [
     {
-      "name": "bountyCancelled",
+      "name": "ConfigInitialized",
       "discriminator": [
-        234,
-        186,
-        248,
-        214,
-        198,
-        69,
-        152,
-        23
+        181,
+        49,
+        200,
+        156,
+        19,
+        167,
+        178,
+        91
       ]
     },
     {
-      "name": "bountyCreated",
+      "name": "OperatorSetChanged",
+      "discriminator": [
+        93,
+        44,
+        48,
+        226,
+        22,
+        125,
+        189,
+        192
+      ]
+    },
+    {
+      "name": "BountyCreated",
       "discriminator": [
         68,
         252,
@@ -310,7 +651,20 @@ export type SealedCodeBounty = {
       ]
     },
     {
-      "name": "bountyResolved",
+      "name": "ExploitSubmitted",
+      "discriminator": [
+        248,
+        74,
+        68,
+        158,
+        65,
+        70,
+        98,
+        240
+      ]
+    },
+    {
+      "name": "BountyResolved",
       "discriminator": [
         250,
         202,
@@ -323,77 +677,194 @@ export type SealedCodeBounty = {
       ]
     },
     {
-      "name": "solutionSubmitted",
+      "name": "BountyCancelled",
       "discriminator": [
-        206,
+        234,
+        186,
+        248,
+        214,
+        198,
+        69,
+        152,
+        23
+      ]
+    },
+    {
+      "name": "SubmissionUnlocked",
+      "discriminator": [
+        29,
+        66,
+        90,
+        204,
+        109,
         122,
-        71,
-        176,
-        145,
-        150,
-        230,
-        5
+        98,
+        174
+      ]
+    },
+    {
+      "name": "BountyClosed",
+      "discriminator": [
+        93,
+        75,
+        96,
+        53,
+        212,
+        127,
+        82,
+        120
       ]
     }
   ],
   "errors": [
     {
       "code": 6000,
-      "name": "invalidPrizeAmount",
+      "name": "InvalidPrizeAmount",
       "msg": "Prize amount must be greater than zero"
     },
     {
       "code": 6001,
-      "name": "invalidDeadline",
+      "name": "InvalidDeadline",
       "msg": "Deadline must be in the future"
     },
     {
       "code": 6002,
-      "name": "solutionTooLong",
-      "msg": "Solution exceeds maximum allowed length"
+      "name": "NotOpen",
+      "msg": "Bounty is not open for submissions"
     },
     {
       "code": 6003,
-      "name": "alreadySubmitted",
-      "msg": "Bounty already has a pending submission"
+      "name": "BlobUrlTooLong",
+      "msg": "Blob URL exceeds maximum allowed length (200)"
     },
     {
       "code": 6004,
-      "name": "alreadyResolved",
-      "msg": "Bounty has already been resolved"
+      "name": "DeadlinePassed",
+      "msg": "Bounty deadline has passed; submissions are closed"
     },
     {
       "code": 6005,
-      "name": "noSubmission",
-      "msg": "No submission pending for this bounty"
+      "name": "NotAwaitingResolution",
+      "msg": "Bounty is not awaiting resolution"
     },
     {
       "code": 6006,
-      "name": "solverMismatch",
-      "msg": "Solver account does not match the recorded submitter"
+      "name": "NoSubmission",
+      "msg": "No submission pending for this bounty"
     },
     {
       "code": 6007,
-      "name": "notExpiredYet",
+      "name": "SolverMismatch",
+      "msg": "Solver account does not match the recorded submitter"
+    },
+    {
+      "code": 6008,
+      "name": "MissingSigVerify",
+      "msg": "No valid Ed25519 verdict instruction over the expected message found in this transaction"
+    },
+    {
+      "code": 6009,
+      "name": "UnauthorizedOperator",
+      "msg": "Verdict signer is not a configured operator"
+    },
+    {
+      "code": 6010,
+      "name": "BadThreshold",
+      "msg": "Operator threshold not satisfied by supplied signatures"
+    },
+    {
+      "code": 6011,
+      "name": "Unauthorized",
+      "msg": "Only the platform authority may perform this action"
+    },
+    {
+      "code": 6012,
+      "name": "InvalidOperators",
+      "msg": "Operator list invalid (empty, too large, or contains duplicates)"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidRevealPayload",
+      "msg": "Reveal payload malformed"
+    },
+    {
+      "code": 6014,
+      "name": "MissingPayoutAccounts",
+      "msg": "Receipt and Reveal accounts are required for a PASS resolution"
+    },
+    {
+      "code": 6015,
+      "name": "UnexpectedPayoutAccounts",
+      "msg": "FAIL resolutions must not carry Receipt or Reveal accounts"
+    },
+    {
+      "code": 6016,
+      "name": "InvalidRevealCarrier",
+      "msg": "PASS reveals must carry exactly one carrier: inline ciphertext XOR https URL"
+    },
+    {
+      "code": 6017,
+      "name": "InvalidRevealUrl",
+      "msg": "Reveal URL must start with https://"
+    },
+    {
+      "code": 6018,
+      "name": "ForceUnlockTooEarly",
+      "msg": "Force unlock delay has not elapsed yet"
+    },
+    {
+      "code": 6019,
+      "name": "InvalidForceUnlockDelay",
+      "msg": "Force unlock delay must be greater than zero"
+    },
+    {
+      "code": 6020,
+      "name": "EscrowInsufficient",
+      "msg": "Escrow balance insufficient for payout + bond refund"
+    },
+    {
+      "code": 6021,
+      "name": "NotExpiredYet",
       "msg": "Bounty deadline has not passed yet"
+    },
+    {
+      "code": 6022,
+      "name": "NotResolved",
+      "msg": "Bounty is not in Resolved status"
     }
   ],
   "types": [
     {
-      "name": "bounty",
+      "name": "BountyStatus",
+      "type": {
+        "kind": "enum",
+        "variants": [
+          {
+            "name": "Open"
+          },
+          {
+            "name": "AwaitingResolution"
+          },
+          {
+            "name": "Resolved"
+          },
+          {
+            "name": "Cancelled"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SubmissionRef",
       "type": {
         "kind": "struct",
         "fields": [
           {
-            "name": "buyer",
+            "name": "solver",
             "type": "pubkey"
           },
           {
-            "name": "bountyId",
-            "type": "u64"
-          },
-          {
-            "name": "testSuiteHash",
+            "name": "exploit_sha256",
             "type": {
               "array": [
                 "u8",
@@ -402,30 +873,55 @@ export type SealedCodeBounty = {
             }
           },
           {
-            "name": "prizeAmount",
+            "name": "blob_url",
+            "type": "string"
+          },
+          {
+            "name": "bond_lamports",
             "type": "u64"
           },
           {
-            "name": "deadline",
+            "name": "submitted_at",
             "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Config",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "platform_authority",
+            "type": "pubkey"
           },
           {
-            "name": "submitted",
-            "type": "bool"
-          },
-          {
-            "name": "resolved",
-            "type": "bool"
-          },
-          {
-            "name": "solver",
+            "name": "operators",
             "type": {
-              "option": "pubkey"
+              "vec": "pubkey"
             }
           },
           {
-            "name": "solution",
-            "type": "string"
+            "name": "threshold",
+            "type": "u8"
+          },
+          {
+            "name": "enclave_enc_pk",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "submission_bond_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "force_unlock_delay_s",
+            "type": "i64"
           },
           {
             "name": "bump",
@@ -435,7 +931,95 @@ export type SealedCodeBounty = {
       }
     },
     {
-      "name": "bountyCancelled",
+      "name": "Bounty",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "bounty_id",
+            "type": "u64"
+          },
+          {
+            "name": "status",
+            "type": {
+              "defined": {
+                "name": "BountyStatus"
+              }
+            }
+          },
+          {
+            "name": "prize_lamports",
+            "type": "u64"
+          },
+          {
+            "name": "deadline",
+            "type": "i64"
+          },
+          {
+            "name": "manifest_sha256",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "env_blob_sha256",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "flag_commitment",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "buyer_enc_pk",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "current_submission",
+            "type": {
+              "option": {
+                "defined": {
+                  "name": "SubmissionRef"
+                }
+              }
+            }
+          },
+          {
+            "name": "winner",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Receipt",
       "type": {
         "kind": "struct",
         "fields": [
@@ -444,22 +1028,112 @@ export type SealedCodeBounty = {
             "type": "pubkey"
           },
           {
-            "name": "buyer",
+            "name": "solver",
             "type": "pubkey"
           },
           {
-            "name": "bountyId",
-            "type": "u64"
+            "name": "exploit_sha256",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
           },
           {
-            "name": "refundedAmount",
+            "name": "first_blood",
+            "type": "bool"
+          },
+          {
+            "name": "timestamp",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Reveal",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "ciphertext",
+            "type": "bytes"
+          },
+          {
+            "name": "ciphertext_url",
+            "type": "string"
+          },
+          {
+            "name": "ciphertext_sha256",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "ConfigInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "platform_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "enclave_enc_pk",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "submission_bond_lamports",
             "type": "u64"
           }
         ]
       }
     },
     {
-      "name": "bountyCreated",
+      "name": "OperatorSetChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "operators",
+            "type": {
+              "vec": "pubkey"
+            }
+          },
+          {
+            "name": "threshold",
+            "type": "u8"
+          },
+          {
+            "name": "enclave_enc_pk",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "force_unlock_delay_s",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BountyCreated",
       "type": {
         "kind": "struct",
         "fields": [
@@ -472,11 +1146,11 @@ export type SealedCodeBounty = {
             "type": "pubkey"
           },
           {
-            "name": "bountyId",
+            "name": "bounty_id",
             "type": "u64"
           },
           {
-            "name": "prizeAmount",
+            "name": "prize_lamports",
             "type": "u64"
           },
           {
@@ -487,7 +1161,7 @@ export type SealedCodeBounty = {
       }
     },
     {
-      "name": "bountyResolved",
+      "name": "ExploitSubmitted",
       "type": {
         "kind": "struct",
         "fields": [
@@ -500,22 +1174,81 @@ export type SealedCodeBounty = {
             "type": "pubkey"
           },
           {
-            "name": "bountyId",
+            "name": "bounty_id",
             "type": "u64"
           },
           {
-            "name": "passed",
+            "name": "exploit_sha256",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          },
+          {
+            "name": "bond_lamports",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "BountyResolved",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "bounty_id",
+            "type": "u64"
+          },
+          {
+            "name": "outcome",
             "type": "bool"
           },
           {
-            "name": "prizeAmount",
+            "name": "winner",
+            "type": {
+              "option": "pubkey"
+            }
+          },
+          {
+            "name": "prize_paid",
             "type": "u64"
           }
         ]
       }
     },
     {
-      "name": "solutionSubmitted",
+      "name": "BountyCancelled",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty",
+            "type": "pubkey"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          },
+          {
+            "name": "bounty_id",
+            "type": "u64"
+          },
+          {
+            "name": "refunded_amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "SubmissionUnlocked",
       "type": {
         "kind": "struct",
         "fields": [
@@ -528,28 +1261,37 @@ export type SealedCodeBounty = {
             "type": "pubkey"
           },
           {
-            "name": "bountyId",
+            "name": "bounty_id",
             "type": "u64"
           }
         ]
       }
-    }
-  ],
-  "constants": [
-    {
-      "name": "bountySeed",
-      "type": "bytes",
-      "value": "[98, 111, 117, 110, 116, 121]"
     },
     {
-      "name": "maxSolutionLen",
-      "type": "u64",
-      "value": "2000"
-    },
-    {
-      "name": "submissionFeeLamports",
-      "type": "u64",
-      "value": "5000000"
+      "name": "BountyClosed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bounty_id",
+            "type": "u64"
+          },
+          {
+            "name": "buyer",
+            "type": "pubkey"
+          }
+        ]
+      }
     }
   ]
-};
+} as const;
+
+// Anchor's Program<T> constraint needs a MUTABLE Idl-shaped type; strip the
+// `as const` readonly modifiers while preserving the literal names/discriminators
+// so the typed account + method namespaces still resolve.
+// Homomorphic mapping preserves tuple structure (e.g. ["u8", 32], the 8-byte
+// discriminators) while dropping readonly — a plain infer-U array branch would
+// collapse those tuples and break Anchor's IdlType constraints.
+type DeepMutable<T> = T extends object ? { -readonly [K in keyof T]: DeepMutable<T[K]> } : T;
+
+export type SealedCodeBounty = DeepMutable<typeof IDL>;

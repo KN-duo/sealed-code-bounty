@@ -1,45 +1,39 @@
-import { useState } from "react";
-import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { WalletContextProvider } from "./providers/WalletContextProvider";
-import { CreateBountyForm } from "./components/CreateBountyForm";
-import { SubmitSolutionForm } from "./components/SubmitSolutionForm";
-import { BountyStatus } from "./components/BountyStatus";
+import type { ReactNode } from "react";
+import { useHashPath, matchPath } from "./router";
+import { AppShell } from "./components/layout/AppShell";
+import { Board } from "./pages/Board";
+import { Leaderboard } from "./pages/Leaderboard";
+import { PostBounty } from "./pages/PostBounty";
+import { Manage } from "./pages/Manage";
+import { BountyDetail } from "./pages/BountyDetail";
+import { SubmitConsole } from "./pages/SubmitConsole";
+import { NotFound } from "./pages/NotFound";
 
-function AppInner() {
-  const [lastBuyer, setLastBuyer] = useState<string | undefined>(undefined);
-  const [lastBountyId, setLastBountyId] = useState<string | undefined>(undefined);
-
-  return (
-    <div style={{ maxWidth: 960, margin: "0 auto", padding: 24, fontFamily: "sans-serif" }}>
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-        <h1>SealedCodeBounty</h1>
-        <WalletMultiButton />
-      </header>
-      <p>
-        Devnet only. Program: <code>FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V</code>
-      </p>
-
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 32, marginTop: 24 }}>
-        <CreateBountyForm
-          onCreated={(buyer, bountyId) => {
-            setLastBuyer(buyer);
-            setLastBountyId(bountyId);
-          }}
-        />
-        <SubmitSolutionForm />
-      </div>
-
-      <div style={{ marginTop: 32 }}>
-        <BountyStatus buyerAddress={lastBuyer} bountyId={lastBountyId} />
-      </div>
-    </div>
-  );
+interface RouteDef {
+  pattern: string;
+  render: (params: Record<string, string>) => ReactNode;
 }
 
+const ROUTES: RouteDef[] = [
+  { pattern: "/", render: () => <Board /> },
+  { pattern: "/leaderboard", render: () => <Leaderboard /> },
+  { pattern: "/post", render: () => <PostBounty /> },
+  { pattern: "/manage", render: () => <Manage /> },
+  { pattern: "/bounty/:pda", render: (p) => <BountyDetail pda={p.pda} /> },
+  { pattern: "/hunt/:pda", render: (p) => <SubmitConsole pda={p.pda} /> },
+];
+
 export default function App() {
-  return (
-    <WalletContextProvider>
-      <AppInner />
-    </WalletContextProvider>
-  );
+  const path = useHashPath();
+
+  let content: ReactNode = <NotFound />;
+  for (const route of ROUTES) {
+    const params = matchPath(route.pattern, path);
+    if (params) {
+      content = route.render(params);
+      break;
+    }
+  }
+
+  return <AppShell>{content}</AppShell>;
 }
