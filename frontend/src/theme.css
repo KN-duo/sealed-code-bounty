@@ -373,6 +373,11 @@ button {
   border-style: solid;
   border-color: rgba(120, 190, 32, 0.5);
 }
+.filedrop:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-glow);
+}
 
 /* hash badge */
 .hashbadge {
@@ -776,6 +781,18 @@ button {
 }
 .toast-error {
   border-color: rgba(255, 95, 110, 0.5);
+}
+.toast-close {
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: color 0.12s;
+}
+.toast-close:hover {
+  color: var(--text);
 }
 @keyframes toastin {
   from {

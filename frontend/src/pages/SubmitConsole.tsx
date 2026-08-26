@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { PublicKey } from "@solana/web3.js";
 import {
+  AlertCircle,
   ArrowLeft,
   CheckCircle2,
   Crosshair,
+  Hourglass,
   PartyPopper,
   ShieldAlert,
   Terminal,
@@ -32,8 +34,14 @@ import { uploadExploit } from "../lib/runner";
 import { submitExploit, txErrorMessage } from "../lib/tx";
 import type { Bounty, ProtocolConfig } from "../lib/types";
 
-type Phase = "compose" | "working" | "watching" | "pass" | "fail";
+type Phase = "compose" | "working" | "watching" | "timeout" | "pass" | "fail";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// The reveal is sealed inline on-chain and the program caps it at 9,700 bytes,
+// so anything larger fails late and confusingly at resolve time. Enforced both
+// at file-pick time (FileDrop maxBytes) and on the submit path itself, since a
+// paste can bypass the picker.
+const MAX_EXPLOIT_BYTES = 9000;
 
 export function SubmitConsole({ pda }: { pda: string }) {
   const wallet = useWallet();
@@ -111,6 +119,13 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
   const notOpen = bounty.status !== "open";
   const canSign = typeof signMessage === "function";
 
+  // Byte length of the exploit after TextEncoder encoding — string .length
+  // undercounts multi-byte characters, and the on-chain cap is in bytes.
+  const exploitByteLength = useMemo(
+    () => new TextEncoder().encode(source).length,
+    [source],
+  );
+
   // Poll on-chain status after submission until a terminal verdict.
   useEffect(() => {
     if (phase !== "watching") return;
@@ -118,6 +133,7 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
     (async () => {
       for (let i = 0; i < 40 && watching.current; i++) {
         await sleep(3000);
+        if (!watching.current) return; // unmounted or left watching during the sleep
         let b: Bounty | null = null;
         try {
           b = await fetchBounty(bounty.pda);
@@ -126,15 +142,20 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
         }
         if (!b) continue;
         if (b.status === "resolved") {
+          if (!watching.current) return;
           setPhase(b.winner === solver.toBase58() ? "pass" : "fail");
           return;
         }
         if (b.status === "open" && !b.submission) {
+          if (!watching.current) return;
           addLog("verdict: FAIL — submission slot reopened");
           setPhase("fail");
           return;
         }
       }
+      if (!watching.current) return;
+      addLog(`no verdict after ${40 * 3}s — the verifier is still processing`);
+      setPhase("timeout");
     })();
     return () => {
       watching.current = false;
@@ -155,11 +176,17 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
       setError("Load or paste an exploit first.");
       return;
     }
+    const exploit = new TextEncoder().encode(source);
+    if (exploit.length > MAX_EXPLOIT_BYTES) {
+      setError(
+        `Exploit is ${exploit.length.toLocaleString()} bytes — over the ${MAX_EXPLOIT_BYTES.toLocaleString()} byte limit for inline reveals.`,
+      );
+      return;
+    }
 
     setPhase("working");
     setLog([]);
     try {
-      const exploit = new TextEncoder().encode(source);
       const exploitSha = sha256Bytes(exploit);
       addLog(`sha256(exploit) = ${bytesToHex(exploitSha)}`);
 
@@ -257,6 +284,38 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
     );
   }
 
+  if (phase === "timeout") {
+    return (
+      <Card style={{ padding: 32, textAlign: "center" }} className="stack">
+        <Hourglass size={44} color="var(--accent-amber)" style={{ margin: "0 auto" }} />
+        <h2>No verdict yet</h2>
+        <p className="dim">
+          We polled for about two minutes without a verdict from the verifier. Your submission is
+          still on-chain and can still resolve — this is not a FAIL, and your bond is not lost.
+        </p>
+        {log.length > 0 && (
+          <pre className="rawjson mono" style={{ textAlign: "left" }}>
+            {log.join("\n")}
+          </pre>
+        )}
+        <div className="row" style={{ justifyContent: "center", gap: 10 }}>
+          <Button
+            variant="primary"
+            onClick={() => {
+              addLog("resuming verdict polling…");
+              setPhase("watching");
+            }}
+          >
+            Keep waiting
+          </Button>
+          <Link to={`/bounty/${bounty.pda}`}>
+            <Button>Back to bounty</Button>
+          </Link>
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <div className="stack" style={{ gap: 18 }}>
       <div>
@@ -293,10 +352,12 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
             accept=".py,.txt,.sh,text/*"
             label="Drop exploit.py or click to browse"
             loadedName={fileName}
+            maxBytes={MAX_EXPLOIT_BYTES}
             onFile={(name, contents) => {
               setFileName(name);
               setSource(contents);
             }}
+            onError={(message) => setError(message)}
           />
         </Field>
         <Textarea
@@ -308,6 +369,15 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
             setFileName(null);
           }}
         />
+        {exploitByteLength > MAX_EXPLOIT_BYTES && (
+          <div className="row" style={{ color: "var(--accent-red)", gap: 6 }}>
+            <AlertCircle size={14} />
+            <span>
+              Exploit is {exploitByteLength.toLocaleString()} bytes — over the{" "}
+              {MAX_EXPLOIT_BYTES.toLocaleString()} byte limit for inline reveals.
+            </span>
+          </div>
+        )}
 
         {error && (
           <div className="row" style={{ color: "var(--accent-red)" }}>
