@@ -1,0 +1,31 @@
+name: integration-real-docker
+on:
+  workflow_dispatch:
+jobs:
+  e2e:
+    runs-on: ubuntu-latest   # Docker daemon preinstalled
+    env:
+      SCB_SANDBOX: docker
+      SCB_MASTER_SECRET_HEX: "42424242424242424242424242424242424242424242424242424242424242"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 20}
+      - name: Install Solana CLI + Anchor
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked
+          avm install 0.31.1 && avm use 0.31.1
+      - run: solana-keygen new --no-bip39-passphrase
+      - run: anchor build
+      - name: Dress rehearsal (happy) with REAL container execution
+        run: ./e2e/localnet.sh happy
+      - name: Negative path
+        run: ./e2e/localnet.sh negative
+      - name: Unlock drill
+        run: ./e2e/localnet.sh unlock-drill
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with: {name: e2e-logs, path: /tmp/scb-e2e-*/**}

@@ -1,0 +1,50 @@
+name: ci
+on:
+  push: {branches: [main]}
+  pull_request:
+jobs:
+  rust-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: {components: clippy}
+      - name: clippy
+        working-directory: runner
+        run: cargo clippy --all-targets -- -D warnings
+      - name: tests
+        working-directory: runner
+        run: cargo test
+  node:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: {dir: [cli, relayer, frontend]}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+      - run: npm install
+        working-directory: ${{ matrix.dir }}
+      - run: npm run build --if-present
+        working-directory: ${{ matrix.dir }}
+      - run: npm test --if-present
+        working-directory: ${{ matrix.dir }}
+  anchor-program:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: {node-version: 20}
+      - name: Install Solana CLI + Anchor
+        run: |
+          sh -c "$(curl -sSfL https://release.anza.xyz/stable/install)"
+          echo "$HOME/.local/share/solana/install/active_release/bin" >> "$GITHUB_PATH"
+          cargo install --git https://github.com/coral-xyz/anchor avm --locked
+          avm install 0.31.1 && avm use 0.31.1
+      - run: solana-keygen new --no-bip39-passphrase
+      - run: anchor build
+      - run: anchor test --skip-build
