@@ -1,0 +1,2 @@
+# The rig's chain half runs in WSL; CRLF would break its shebang.
+*.sh text eol=lf
