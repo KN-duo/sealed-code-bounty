@@ -33,11 +33,13 @@ async function main(): Promise<void> {
   }
   const idl = JSON.parse(fs.readFileSync(idlAbs, "utf8")) as unknown as SealedCodeBounty;
   // anchor 1.x derives the program id from idl.metadata.address.
-  const idlAddress = (idl as unknown as { metadata?: { address?: string } }).metadata?.address;
-  if (!idlAddress || idlAddress !== cfg.programId) {
-    throw new Error(
-      `PROGRAM_ID ${cfg.programId} does not match IDL metadata address ${idlAddress ?? "<none>"}`
-    );
+  // Anchor 0.x IDLs put the address at the top level; 1.x spec puts it in
+  // metadata. Accept either, and treat a missing address as "use PROGRAM_ID".
+  const idlAddress =
+    (idl as unknown as { address?: string }).address ??
+    (idl as unknown as { metadata?: { address?: string } }).metadata?.address;
+  if (idlAddress && idlAddress !== cfg.programId) {
+    throw new Error(`PROGRAM_ID ${cfg.programId} != IDL address ${idlAddress}`);
   }
 
   const connection = new Connection(cfg.rpcUrl, "confirmed");

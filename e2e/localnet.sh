@@ -48,28 +48,41 @@ MOCK_PORT=8443
 
 cleanup() {
   for p in "${PIDS[@]:-}"; do kill -9 "$p" 2>/dev/null || true; done
+  [ -n "${MOCK_PID:-}" ] && kill -9 "$MOCK_PID" 2>/dev/null || true
 }
+
+# Kill any stray validator/relayer/mock from previous runs (audit P1-2)
+for pat in solana-test-validator agave-validator mock-enclave.cjs; do
+  for pid in $(pgrep -f "$pat" 2>/dev/null); do
+    [ "$pid" = "$$" ] || kill -9 "$pid" 2>/dev/null
+  done
+done
+# Wait for port 8899 to free up
+for i in $(seq 1 10); do
+  ss -ltn 2>/dev/null | grep -q ":8899 " || break
+  sleep 0.5
+  for pid in $(ss -ltnp 2>/dev/null | grep ':8899 ' | grep -oP 'pid=\K[0-9]+' | sort -u); do
+    kill -9 "$pid" 2>/dev/null
+  done
+done
 trap cleanup EXIT
 
 step() { echo ""; echo "== STEP: $* =="; }
 fail() { echo "WHICH=$1 FAIL: $2"; exit 3; }
 assert_eq() { if [ "$1" != "$2" ]; then echo "WHICH=$3 FAIL: got '$1' want '$2'"; exit 3; fi; echo "ok: $3"; }
 
-start_mock() { # $1 port ; env SCB_MOCK_FORCE_FAIL optional
-  PORT="$1" SCB_MOCK_OPERATOR_KEYPAIR="$WORK/operator.json" \
-    ${SCB_MOCK_FORCE_FAIL:+SCB_MOCK_FORCE_FAIL=$SCB_MOCK_FORCE_FAIL} \
-    node relayer/test/mock-enclave.cjs >>"$MOCK_LOG" 2>&1 &
-  PIDS+=("$!")
+MOCK_PID=""
+start_mock() { # $1 port ; reads exported SCB_MOCK_FORCE_FAIL
+  PORT="$1"
+  SCB_MOCK_OPERATOR_KEYPAIR="$WORK/operator.json"
+  export PORT SCB_MOCK_OPERATOR_KEYPAIR
+  node relayer/test/mock-enclave.cjs >>"$MOCK_LOG" 2>&1 &
   for _ in $(seq 1 30); do
     curl -s "http://127.0.0.1:$1/internal/operator-pubkey" >/dev/null 2>&1 && return 0
     sleep 0.3
   done
-  fail "mock" "mock-enclave did not start ($MOCK_LOG)"
-}
-stop_last_mock() {
-  local pid="${PIDS[-1]}"
-  kill -9 "$pid" 2>/dev/null || true
-  PIDS=("${PIDS[@]/$pid/}")
+  echo "FAIL: mock-enclave did not start ($MOCK_LOG)" >&2
+  return 1
 }
 start_relayer() { # $1 enclave url
   RPC_URL="$RPC_URL" PROGRAM_ID="$PROGRAM_ID" \
@@ -232,33 +245,39 @@ if [ "$MODE" = "negative" ]; then
   BROKEN_FILE="$WORK/exploit-broken.py"
   echo "this is NOT an exploit" > "$BROKEN_FILE"
 
-  MOCK_PORT=8443
-
   # --- Phase 0: honest control PASS ---
-  step "[N0] control: working solve must PASS"
-  start_mock "$MOCK_PORT"
+  step "[N0] control: honest mock -> PASS"
+  HONEST_PORT=8443
+  start_mock "$HONEST_PORT"
   CUR_ID=$(next_bounty_id)
   PDA_B58=$(pda_of "$BUYER_PUB" "$CUR_ID")
-  FC=$(seal_commitment "$PDA_B58" "$MOCK_PORT")
+  FC=$(seal_commitment "$PDA_B58" "$HONEST_PORT")
   node e2e/chain.mjs create-bounty "$WORK/buyer.json" "$CUR_ID" \
     "$PRIZE_LAMPORTS" 3600 "$MANIFEST_HEX" "$ENV_HASH_HEX" \
     "$FC" "$BUYER_ENC_PK_HEX" >/dev/null
-  start_relayer "http://127.0.0.1:$MOCK_PORT"
+  start_relayer "http://127.0.0.1:$HONEST_PORT"
   sleep 2
   CONTROL_OUT=$(scb_submit "$EXPLOIT_SOLVE" "--wait")
   echo "$CONTROL_OUT" | head -2
   echo "$CONTROL_OUT" | grep -q '"status": *"PASS"' || fail "control" "control did not pass"
 
-  # Swap to force-fail mock (relayer stays running; new requests hit new mock)
-  pkill -9 -f "mock-enclave.cjs" 2>/dev/null || true
-  sleep 1
-  SCB_MOCK_FORCE_FAIL=1 start_mock "$MOCK_PORT"
+  # --- Swap: kill honest mock + relayer; start force-fail on DIFFERENT port ---
+  kill -9 $! 2>/dev/null || true # kill relayer
+  pkill -9 -f "scb-target\|scb-exploit" 2>/dev/null || true
 
-  # --- Phase 1: broken exploit gets FAIL ---
+  FAIL_PORT=8444
+  export SCB_MOCK_FORCE_FAIL=1
+  start_mock "$FAIL_PORT"
+  unset SCB_MOCK_FORCE_FAIL
+
+  # Restart relayer pointing at force-fail mock
+  start_relayer "http://127.0.0.1:$FAIL_PORT"
+
+  # --- Phase 1: broken exploit gets FAIL verdict ---
   step "[N1] broken exploit -> FAIL verdict"
   CUR_ID=$(next_bounty_id)
   PDA_B58=$(pda_of "$BUYER_PUB" "$CUR_ID")
-  FC=$(seal_commitment "$PDA_B58" "$MOCK_PORT")
+  FC=$(seal_commitment "$PDA_B58" "$FAIL_PORT")
   node e2e/chain.mjs create-bounty "$WORK/buyer.json" "$CUR_ID" \
     "$PRIZE_LAMPORTS" 3600 "$MANIFEST_HEX" "$ENV_HASH_HEX" \
     "$FC" "$BUYER_ENC_PK_HEX" >/dev/null
