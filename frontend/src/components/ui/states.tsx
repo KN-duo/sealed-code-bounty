@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AlertTriangle, Inbox, RotateCw } from "lucide-react";
+import { AlertTriangle, Inbox, PlugZap, RotateCw } from "lucide-react";
 import type { AsyncState } from "../../lib/async";
 import { Button } from "./Button";
 
@@ -29,13 +29,28 @@ export function EmptyState({
 }
 
 export function ErrorState({ message, onRetry }: { message: string; onRetry?: () => void }) {
+  // An offline network/service isn't an app error — it's an expected state
+  // (especially on localnet before the validator is started). Present it calmly
+  // and separately from a genuine failure.
+  const offline = /reach the network|service running|offline|connection refused/i.test(message);
   return (
     <div className="statebox">
-      <div className="statebox-icon" style={{ color: "var(--accent-red)" }}>
-        <AlertTriangle size={34} strokeWidth={1.5} />
+      <div
+        className="statebox-icon"
+        style={{ color: offline ? "var(--accent-amber)" : "var(--accent-red)" }}
+      >
+        {offline ? (
+          <PlugZap size={34} strokeWidth={1.5} />
+        ) : (
+          <AlertTriangle size={34} strokeWidth={1.5} />
+        )}
       </div>
-      <h3>Something went wrong</h3>
-      <p className="dim" style={{ margin: 0, maxWidth: 460 }}>{message}</p>
+      <h3>{offline ? "Network unavailable" : "Something went wrong"}</h3>
+      <p className="dim" style={{ margin: 0, maxWidth: 460 }}>
+        {offline
+          ? "Couldn't reach the Solana cluster. If you're on localnet, start the validator, then retry."
+          : message}
+      </p>
       {onRetry && (
         <Button onClick={onRetry}>
           <RotateCw size={15} /> Retry
