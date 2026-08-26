@@ -296,28 +296,7 @@ switch (cmd) {
     break;
   }
 
-  case "set-delay": {
-    // Reads current ops from Config, replays them through set_operators with new delay.
-    const [authKpPath, delay] = args;
-    const auth = kpFromFile(authKpPath);
-    const prog = programWithWallet(auth);
-    const cfgInfo = await connection.getAccountInfo(configPdaPubkey());
-    if (!cfgInfo) throw new Error("config not initialized");
-    const d = cfgInfo.data;
-    const opsLen = d.readUInt32LE(40);
-    const ops = [];
-    for (let i = 0; i < opsLen; i++)
-      ops.push(new web3.PublicKey(d.subarray(44 + i * 32, 76 + i * 32)));
-    const threshold = d[76 + opsLen * 32];
-    const encPk = Buffer.from(d.subarray(77 + opsLen * 32, 109 + opsLen * 32));
-    const sig = await prog.methods
-      .setOperators(ops, threshold, [...encPk], new anchor.BN(Number(delay)))
-      .accountsStrict({ authority: auth.publicKey, config: configPdaPubkey() })
-      .rpc();
-    await confirm(sig);
-    console.log(JSON.stringify({ ok: true }));
-    break;
-  }
+
 
   case "fetch-bounty": {
     const [buyerB58, id] = args;

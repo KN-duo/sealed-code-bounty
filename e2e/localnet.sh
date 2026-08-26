@@ -51,6 +51,7 @@ cleanup() {
   [ -n "${MOCK_PID:-}" ] && kill -9 "$MOCK_PID" 2>/dev/null || true
 }
 
+
 # Kill any stray validator/relayer/mock from previous runs (audit P1-2)
 for pat in solana-test-validator agave-validator mock-enclave.cjs; do
   for pid in $(pgrep -f "$pat" 2>/dev/null); do
@@ -85,6 +86,15 @@ start_mock() { # $1 port ; reads exported SCB_MOCK_FORCE_FAIL
   return 1
 }
 start_relayer() { # $1 enclave url
+  # Belt+suspenders: verify RPC is actually responding before starting relayer.
+  local health=""
+  for i in $(seq 1 10); do
+    health=$(curl -s "$RPC_URL" -X POST -H 'content-type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"getHealth"}' 2>/dev/null)
+    echo "$health" | grep -q '"ok"' && break
+    sleep 0.5
+  done
+
   RPC_URL="$RPC_URL" PROGRAM_ID="$PROGRAM_ID" \
   FEE_PAYER_KEYPAIR_PATH="$WORK/funder.json" OPERATOR_PUBKEY="$OPERATOR_PUB" \
   ENCLAVE_URL="$1" POLL_INTERVAL_MS=800 \
@@ -117,6 +127,15 @@ scb_submit() { # $1 file, extra flags via remaining args
 }
 
 # ===========================================================================
+wait_for_port() { # $1=port [$2=label]
+  local port="${1:-}" label="${2:-port $1}" i
+  for i in $(seq 1 120); do
+    nc -z 127.0.0.1 "$port" 2>/dev/null && { echo "port $port ready ($label)"; return 0; }
+    sleep 0.5
+  done
+  fail "$label" "port $port not listening after 60s"
+}
+
 step "boot: fresh validator + funded wallets"
 LEDGER="$WORK/ledger"
 if [ -f target/deploy/sealed_code_bounty-keypair.json ]; then
@@ -137,6 +156,9 @@ for i in $(seq 1 40); do
   sleep 0.5
 done
 echo "validator up"
+wait_for_port 8899 "RPC"
+wait_for_port 8900 "WebSocket"
+echo "both RPC and WS ports confirmed listening"
 
 for name in buyer solver funder; do
   solana-keygen new --no-bip39-passphrase --silent -o "$WORK/$name.json" >/dev/null 2>&1
