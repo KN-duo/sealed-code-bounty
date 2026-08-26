@@ -19,9 +19,17 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOG="$REPO_DIR/frontend/devrig/.validator.log"
 cd "$REPO_DIR"
 
+# The toolchain installers put themselves on PATH from .bashrc, which a
+# non-interactive shell never reads. Add the standard locations before checking.
+for dir in "$HOME/.local/share/solana/install/active_release/bin" "$HOME/.cargo/bin" "$HOME/.avm/bin"; do
+  [ -d "$dir" ] && case ":$PATH:" in *":$dir:"*) ;; *) PATH="$dir:$PATH" ;; esac
+done
+export PATH
+
 for bin in solana solana-test-validator anchor; do
   command -v "$bin" >/dev/null 2>&1 || {
-    echo "error: '$bin' is not on PATH. Run this inside WSL, where the toolchain lives." >&2
+    echo "error: '$bin' is not on PATH, even after adding the usual install dirs." >&2
+    echo "       Run this inside WSL, where the Solana/Anchor toolchain lives." >&2
     exit 1
   }
 done
@@ -88,6 +96,25 @@ if [ "$DEPLOYED_ID" != "$EXPECTED_PROGRAM_ID" ]; then
 EOF
 else
   echo "==> program id matches the frontend default: $DEPLOYED_ID"
+fi
+
+# --- IDL sanity -------------------------------------------------------------
+# A checkout behind main builds a v1 IDL that looks perfectly valid but names
+# submit_solution / resolve_submission. Catch that here rather than three
+# confusing steps later.
+IDL_JSON="target/idl/sealed_code_bounty.json"
+if [ -f "$IDL_JSON" ] && ! grep -q '"submit_exploit"' "$IDL_JSON"; then
+  cat >&2 <<EOF
+
+  !! The IDL just built does NOT contain submit_exploit — this looks like the
+     stale v1 program (submit_solution / resolve_submission).
+
+     This checkout is probably behind main. Fix it and re-run:
+
+       cd "$REPO_DIR" && git pull --rebase origin main && bash frontend/devrig/localnet.sh
+
+EOF
+  exit 1
 fi
 
 # --- fresh IDL -------------------------------------------------------------

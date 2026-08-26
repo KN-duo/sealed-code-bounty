@@ -42,6 +42,10 @@ git pull
 bash frontend/devrig/localnet.sh
 ```
 
+**`git pull` matters here.** A checkout behind `main` builds a v1 IDL that looks valid but
+names `submit_solution` / `resolve_submission` — as of this writing the WSL checkout was in
+exactly that state. The script now aborts if the freshly built IDL has no `submit_exploit`.
+
 Leave it running; Ctrl-C stops the validator. It refuses to start if `solana`,
 `solana-test-validator`, or `anchor` are missing, and it warns loudly if the deployed
 program id differs from the one `src/env.ts` defaults to
@@ -148,6 +152,8 @@ program's constants drift.
 | Verdict never arrives | check the `serve` terminal: it logs `verdict` and `resolved` lines, and any resolve failure. A relayer under 1 SOL is called out at startup. |
 | Phantom shows no SOL | it is on the wrong network — the custom RPC must be `http://127.0.0.1:8899`. |
 | `localnet.sh: bad interpreter` in WSL | CRLF line endings; `frontend/.gitattributes` pins `*.sh` to LF, so re-checkout the file. |
+| `localnet.sh` aborts on a stale IDL | the WSL checkout is behind `main`; `git pull --rebase origin main` there and re-run. |
+| `'solana' is not on PATH` | the installers export PATH from `.bashrc`, which non-interactive shells skip. The script adds the usual install dirs itself; if it still fails, the toolchain really is missing. |
 
 Teardown: Ctrl-C both terminals, and `rm -rf test-ledger` in WSL. `devrig/rig.local.json`
 holds dev-only keys and is gitignored — delete it to start from fresh keys, but re-run
