@@ -5,7 +5,12 @@ export type ClusterKind = "localnet" | "devnet" | "mainnet" | "custom";
 
 const DEFAULT_PROGRAM_ID = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V";
 const DEFAULT_RPC_URL = "http://127.0.0.1:8899";
-const DEFAULT_ENCLAVE_URL = "http://127.0.0.1:8443";
+// In dev, enclave calls go through the Vite proxy (see vite.config.ts) so they stay
+// same-origin: lib/runner.ts sends `content-type: application/json`, which triggers a
+// CORS preflight, and the runner serves no OPTIONS handler. Keep in sync with
+// ENCLAVE_PREFIX in vite.config.ts.
+const DEV_ENCLAVE_PREFIX = "/enclave";
+const DEFAULT_ENCLAVE_URL = import.meta.env.DEV ? DEV_ENCLAVE_PREFIX : "http://127.0.0.1:8443";
 
 function readEnv(key: string): string | undefined {
   const value = import.meta.env[key as keyof ImportMetaEnv] as string | undefined;
@@ -15,6 +20,12 @@ function readEnv(key: string): string | undefined {
 export const PROGRAM_ID_STRING = readEnv("VITE_PROGRAM_ID") ?? DEFAULT_PROGRAM_ID;
 export const RPC_URL = readEnv("VITE_RPC_URL") ?? DEFAULT_RPC_URL;
 export const ENCLAVE_URL = (readEnv("VITE_ENCLAVE_URL") ?? DEFAULT_ENCLAVE_URL).replace(/\/$/, "");
+
+// A relative ENCLAVE_URL is a proxy path, not an address a human can act on, so error
+// messages name the real destination instead.
+export const ENCLAVE_DISPLAY_URL = ENCLAVE_URL.startsWith("/")
+  ? `${ENCLAVE_URL} (dev proxy → http://127.0.0.1:8443)`
+  : ENCLAVE_URL;
 
 // Cluster is inferred from the RPC url unless explicitly pinned. Purely cosmetic —
 // drives the navbar badge so a user always knows which network they are on.

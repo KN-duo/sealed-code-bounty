@@ -1,4 +1,4 @@
-import { ENCLAVE_URL } from "../env";
+import { ENCLAVE_DISPLAY_URL, ENCLAVE_URL } from "../env";
 
 // Typed client for the runner / enclave HTTP surface. Every call fails LOUDLY
 // with a specific message so the UI can render a real error state, never a
@@ -23,7 +23,7 @@ async function post<T>(path: string, body: unknown): Promise<T> {
     });
   } catch {
     throw new RunnerError(
-      `Could not reach the verifier at ${ENCLAVE_URL}. Is the runner service running?`,
+      `Could not reach the verifier at ${ENCLAVE_DISPLAY_URL}. Is the runner service running?`,
     );
   }
   if (!res.ok) {
