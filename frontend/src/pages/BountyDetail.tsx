@@ -10,7 +10,7 @@ import { Button } from "../components/ui/Button";
 import { StatusPill } from "../components/bounty/StatusPill";
 import { SubmissionTimeline } from "../components/bounty/SubmissionTimeline";
 import { Link } from "../router";
-import { formatDate } from "../lib/format";
+import { explorerAddressUrl, formatDate } from "../lib/format";
 import type { Bounty } from "../lib/types";
 
 // A single on-chain fact with a plain-language explanation so a first-timer
@@ -92,8 +92,9 @@ export function BountyDetail({ pda }: { pda: string }) {
       <AsyncView
         state={state}
         onRetry={reload}
+        loadingVariant="detail"
         emptyTitle="Bounty not found"
-        emptyMessage="No bounty exists at this address on the current cluster."
+        emptyMessage="No bounty exists at this address on the current cluster. Double-check the link and cluster, or browse the board for open bounties."
       >
         {(bounty) => (
           <div className="stack" style={{ gap: 20 }}>
@@ -116,7 +117,7 @@ export function BountyDetail({ pda }: { pda: string }) {
                 <StatBadge label="Deadline" value={<Mono>{formatDate(bounty.deadline)}</Mono>} />
                 <StatBadge
                   label="Buyer"
-                  value={<HashBadge value={bounty.buyer} />}
+                  value={<HashBadge value={bounty.buyer} href={explorerAddressUrl(bounty.buyer)} />}
                 />
                 <StatBadge
                   label="Attempts"
@@ -124,7 +125,7 @@ export function BountyDetail({ pda }: { pda: string }) {
                 />
                 <StatBadge
                   label="Address"
-                  value={<HashBadge value={bounty.pda} />}
+                  value={<HashBadge value={bounty.pda} href={explorerAddressUrl(bounty.pda)} />}
                 />
               </div>
 

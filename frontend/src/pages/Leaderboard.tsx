@@ -4,7 +4,7 @@ import { useReceipts } from "../hooks/useData";
 import { AsyncView } from "../components/ui/states";
 import { Card, Mono } from "../components/ui/atoms";
 import { HashBadge } from "../components/ui/HashBadge";
-import { formatDate, truncate } from "../lib/format";
+import { explorerAddressUrl, formatDate, truncate } from "../lib/format";
 import type { Receipt } from "../lib/types";
 
 interface Row {
@@ -58,12 +58,16 @@ export function Leaderboard() {
       <AsyncView
         state={state}
         onRetry={reload}
+        loadingVariant="list"
         emptyTitle="No winners yet"
-        emptyMessage="The first hunter to break a bounty lands here — with a permanent, verifiable trophy."
+        emptyMessage="No bounty has been won here so far. The first hunter to break one lands at the top with a permanent, verifiable trophy."
       >
         {() => (
-          <Card style={{ overflow: "hidden" }}>
-            <table className="lb">
+          <Card>
+            {/* the ranked table is wider than a 640-768px viewport, so let it
+                scroll inside its own card rather than clip or widen the page */}
+            <div style={{ overflowX: "auto" }}>
+              <table className="lb">
               <thead>
                 <tr>
                   <th style={{ width: 60 }}>Rank</th>
@@ -86,7 +90,7 @@ export function Leaderboard() {
                     </td>
                     <td>
                       <div className="row" style={{ gap: 8 }}>
-                        <HashBadge value={row.solver} title={row.solver} />
+                        <HashBadge value={row.solver} title={row.solver} href={explorerAddressUrl(row.solver)} />
                         <span className="faint mono lb-hide-sm">{truncate(row.solver, 4, 4)}</span>
                       </div>
                     </td>
@@ -105,7 +109,8 @@ export function Leaderboard() {
                   </tr>
                 ))}
               </tbody>
-            </table>
+              </table>
+            </div>
           </Card>
         )}
       </AsyncView>

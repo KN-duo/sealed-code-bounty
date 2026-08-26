@@ -1,4 +1,5 @@
 import { BN } from "@anchor-lang/core";
+import { CLUSTER, RPC_URL } from "../env";
 
 export const LAMPORTS_PER_SOL = 1_000_000_000;
 
@@ -77,6 +78,33 @@ export function formatDate(unixSeconds: number): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+// --- explorer links ---------------------------------------------------------
+
+// Cluster-aware explorer URL for a path like "/tx/<sig>" or "/address/<addr>".
+// mainnet gets no suffix, devnet the ?cluster=devnet param, localnet a custom
+// cluster pointing at the configured RPC. A "custom" cluster has no canonical
+// explorer, so callers must render no link.
+function explorerUrl(path: string): string | null {
+  switch (CLUSTER) {
+    case "devnet":
+      return `https://explorer.solana.com${path}?cluster=devnet`;
+    case "mainnet":
+      return `https://explorer.solana.com${path}`;
+    case "localnet":
+      return `https://explorer.solana.com${path}?cluster=custom&customUrl=${encodeURIComponent(RPC_URL)}`;
+    case "custom":
+      return null;
+  }
+}
+
+export function explorerTxUrl(signature: string): string | null {
+  return explorerUrl(`/tx/${signature}`);
+}
+
+export function explorerAddressUrl(address: string): string | null {
+  return explorerUrl(`/address/${address}`);
 }
 
 // --- clipboard ------------------------------------------------------------

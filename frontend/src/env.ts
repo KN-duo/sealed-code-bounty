@@ -5,12 +5,13 @@ export type ClusterKind = "localnet" | "devnet" | "mainnet" | "custom";
 
 const DEFAULT_PROGRAM_ID = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V";
 const DEFAULT_RPC_URL = "http://127.0.0.1:8899";
-// In dev, enclave calls go through the Vite proxy (see vite.config.ts) so they stay
-// same-origin: lib/runner.ts sends `content-type: application/json`, which triggers a
-// CORS preflight, and the runner serves no OPTIONS handler. Keep in sync with
-// ENCLAVE_PREFIX in vite.config.ts.
+// Same-origin in both dev and prod: dev goes through the Vite proxy (see
+// vite.config.ts) so enclave calls stay same-origin — lib/runner.ts sends
+// `content-type: application/json`, which triggers a CORS preflight, and the
+// runner serves no OPTIONS handler. Prod expects a reverse proxy in front of
+// the app mounting the runner under /enclave. Never default to a hostname.
 const DEV_ENCLAVE_PREFIX = "/enclave";
-const DEFAULT_ENCLAVE_URL = import.meta.env.DEV ? DEV_ENCLAVE_PREFIX : "http://127.0.0.1:8443";
+const DEFAULT_ENCLAVE_URL = DEV_ENCLAVE_PREFIX;
 
 function readEnv(key: string): string | undefined {
   const value = import.meta.env[key as keyof ImportMetaEnv] as string | undefined;
@@ -19,12 +20,17 @@ function readEnv(key: string): string | undefined {
 
 export const PROGRAM_ID_STRING = readEnv("VITE_PROGRAM_ID") ?? DEFAULT_PROGRAM_ID;
 export const RPC_URL = readEnv("VITE_RPC_URL") ?? DEFAULT_RPC_URL;
+// True when VITE_ENCLAVE_URL was not supplied and ENCLAVE_URL fell back to the
+// same-origin default — lets the UI distinguish "configured" from "defaulted".
+export const ENCLAVE_URL_IS_DEFAULT = readEnv("VITE_ENCLAVE_URL") === undefined;
 export const ENCLAVE_URL = (readEnv("VITE_ENCLAVE_URL") ?? DEFAULT_ENCLAVE_URL).replace(/\/$/, "");
 
 // A relative ENCLAVE_URL is a proxy path, not an address a human can act on, so error
 // messages name the real destination instead.
 export const ENCLAVE_DISPLAY_URL = ENCLAVE_URL.startsWith("/")
-  ? `${ENCLAVE_URL} (dev proxy → http://127.0.0.1:8443)`
+  ? import.meta.env.DEV
+    ? `${ENCLAVE_URL} (dev proxy → http://127.0.0.1:8443)`
+    : `${ENCLAVE_URL} (same-origin reverse proxy)`
   : ENCLAVE_URL;
 
 // Cluster is inferred from the RPC url unless explicitly pinned. Purely cosmetic —

@@ -140,3 +140,17 @@ hash router in `src/router`.
    which sidesteps it in development only. **Any browser-facing deployment still needs either a
    CORS layer in the runner or a same-origin reverse proxy in front of it.** Not patched here:
    `runner/` is outside the frontend lane.
+
+## 7. Bundle-size budget
+
+Current production build ships as a **single ~1.31 MB chunk (~416 KB gzipped)**. The bulk is
+`@solana/wallet-adapter-*` plus `@solana/web3.js` and their dependency trees (anchor core,
+Buffer polyfill, BigInt/bn.js); app code is a small fraction of it.
+
+**Budget:** review **fails** if the gzipped main chunk exceeds **500 KB**. We are under budget
+today (~416 KB) but with little headroom for another wallet adapter.
+
+**Identified next step (not implemented):** route-level `import()` code-splitting so each page
+pulls only what it needs (e.g. lazy-load the post wizard and its manifest/crypto helpers), plus
+a manualChunks split that isolates the wallet adapters from app code. Recorded here as the
+agreed follow-up; deliberately not done in this task.

@@ -60,6 +60,7 @@ body,
 
 body {
   margin: 0;
+  overflow-x: clip;
   background:
     radial-gradient(1100px 550px at 82% -10%, rgba(120, 190, 32, 0.06), transparent),
     radial-gradient(900px 460px at -10% 8%, rgba(0, 163, 224, 0.05), transparent),
@@ -132,7 +133,9 @@ button {
   display: flex;
   align-items: center;
   gap: 20px;
-  height: 60px;
+  min-height: 60px;
+  flex-wrap: wrap;
+  padding: 6px 0;
 }
 .brand {
   display: flex;
@@ -141,6 +144,7 @@ button {
   font-weight: 700;
   font-size: 16px;
   letter-spacing: -0.02em;
+  white-space: nowrap;
 }
 .nav-links {
   display: flex;
@@ -148,6 +152,11 @@ button {
   gap: 4px;
   margin-left: 8px;
   flex: 1;
+}
+/* when the links are collapsed (<=900px) this keeps the badge + wallet button
+   pinned to the right edge instead of sitting beside the brand */
+.nav-right {
+  margin-left: auto;
 }
 .nav-link {
   padding: 7px 12px;
@@ -196,9 +205,27 @@ button {
   color: #d8fff1 !important;
 }
 
-@media (max-width: 760px) {
+/* brand + 4 links + cluster badge + wallet button measure ~800px together (more
+   once a wallet is connected and the trigger shows name + balance), so the links
+   must collapse well above the old 760px cut to avoid a squeezed, wrapping
+   navbar between 640 and 1024. */
+@media (max-width: 900px) {
   .nav-links {
     display: none;
+  }
+}
+/* Just below the collapse cut, tighten nav spacing so a connected wallet
+   (trigger grows to ~230px) still fits on one row down to the 900px cut. */
+@media (max-width: 1024px) {
+  .nav-inner {
+    gap: 12px;
+  }
+  .nav-links {
+    margin-left: 0;
+  }
+  .nav-link {
+    padding-left: 8px;
+    padding-right: 8px;
   }
 }
 
@@ -373,10 +400,33 @@ button {
   border-style: solid;
   border-color: rgba(120, 190, 32, 0.5);
 }
+
+/* keyboard focus — every interactive element shows where focus is */
+.btn:focus-visible,
+.chip:focus-visible,
+.toast-close:focus-visible,
+.hashbadge:focus-visible,
+.hashbadge-ext:focus-visible,
+.configwarn-close:focus-visible,
 .filedrop:focus-visible {
   outline: none;
   border-color: var(--accent);
   box-shadow: var(--shadow-glow);
+}
+.input:focus-visible,
+.textarea:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: var(--shadow-glow);
+}
+a:focus-visible {
+  outline: none;
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-glow);
+}
+.wallet-adapter-button:focus-visible {
+  border-color: var(--accent) !important;
+  box-shadow: var(--shadow-glow) !important;
 }
 
 /* hash badge */
@@ -397,6 +447,45 @@ button {
 .hashbadge:hover {
   border-color: var(--border-strong);
   color: var(--text);
+}
+.hashbadge-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.hashbadge-ext {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border-radius: var(--radius-sm);
+  color: var(--text-faint);
+  transition: color 0.12s;
+}
+.hashbadge-ext:hover {
+  color: var(--text);
+}
+
+/* config inconsistency banner */
+.configwarn {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent-amber) 45%, transparent);
+  background: color-mix(in srgb, var(--accent-amber) 8%, var(--bg-inset));
+  border-radius: var(--radius);
+  font-size: 13.5px;
+}
+.configwarn-close {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  padding: 4px;
+  border: none;
+  background: transparent;
+  color: var(--accent-amber);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
 }
 
 /* spinner */

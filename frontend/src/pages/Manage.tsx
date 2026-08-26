@@ -92,7 +92,13 @@ export function Manage() {
         </p>
       </div>
 
-      <AsyncView state={state} onRetry={reload}>
+      <AsyncView
+        state={state}
+        onRetry={reload}
+        loadingVariant="list"
+        emptyTitle="No bounties on this cluster yet"
+        emptyMessage="Nothing has been posted here at all — be the first: post a bounty and it will show up in this list."
+      >
         {() =>
           own.length === 0 ? (
             <EmptyState

@@ -28,7 +28,7 @@ import {
   sha256Bytes,
   toBase64,
 } from "../lib/crypto";
-import { bytesToHex } from "../lib/format";
+import { bytesToHex, explorerTxUrl } from "../lib/format";
 import { fetchBounty } from "../lib/anchorClient";
 import { uploadExploit } from "../lib/runner";
 import { submitExploit, txErrorMessage } from "../lib/tx";
@@ -71,8 +71,9 @@ export function SubmitConsole({ pda }: { pda: string }) {
       <AsyncView
         state={bounty.state}
         onRetry={bounty.reload}
+        loadingVariant="detail"
         emptyTitle="Bounty not found"
-        emptyMessage="No bounty exists at this address on the current cluster."
+        emptyMessage="No bounty exists at this address on the current cluster. Double-check the link and cluster, or browse the board for open bounties."
       >
         {(b) => (
           <Console
@@ -247,7 +248,7 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
         </div>
         {txSig && (
           <div className="row" style={{ justifyContent: "center" }}>
-            <span className="faint">tx</span> <HashBadge value={txSig} />
+            <span className="faint">tx</span> <HashBadge value={txSig} href={explorerTxUrl(txSig)} />
           </div>
         )}
         <div className="row" style={{ justifyContent: "center", gap: 10 }}>
