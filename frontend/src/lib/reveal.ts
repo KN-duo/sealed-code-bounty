@@ -18,7 +18,15 @@ export async function loadReveal(
   bountyPda: string,
   kp: X25519Keypair,
 ): Promise<RevealResult> {
-  const reveal = await fetchReveal(revealPda(new PublicKey(bountyPda)));
+  let reveal: Awaited<ReturnType<typeof fetchReveal>>;
+  try {
+    reveal = await fetchReveal(revealPda(new PublicKey(bountyPda)));
+  } catch {
+    // A dead RPC surfaces here as a raw TypeError otherwise — name the actual cause.
+    throw new Error(
+      "Could not reach the Solana RPC endpoint to read the Reveal account. Is the validator running, and is VITE_RPC_URL pointing at it?",
+    );
+  }
   if (!reveal) throw new Error("No reveal has been published for this bounty yet.");
 
   let ciphertext: Uint8Array;
@@ -49,7 +57,9 @@ export async function loadReveal(
 
   const plaintext = await openSealed(ciphertext, kp);
   if (!plaintext) {
-    throw new Error("Decryption failed — this backup key does not match this bounty.");
+    throw new Error(
+      "Decryption failed — this reveal is sealed to a different key than the one loaded here (or the ciphertext is corrupt). Restore the backup that was downloaded when this bounty was posted.",
+    );
   }
   return { plaintext, carrier, sourceUrl };
 }

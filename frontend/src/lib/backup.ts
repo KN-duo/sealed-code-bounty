@@ -62,6 +62,11 @@ export async function parseBackup(json: string): Promise<X25519Keypair> {
   if (parsed.scheme !== BACKUP_SCHEME) {
     throw new Error("This file is not a SealedCodeBounty buyer-key backup.");
   }
+  if (parsed.version !== BACKUP_VERSION) {
+    throw new Error(
+      `Backup is format version ${parsed.version ?? "unknown"} — this app reads version ${BACKUP_VERSION}. Re-export the key from the browser session that created it.`,
+    );
+  }
   if (!parsed.secretKeyB64) throw new Error("Backup is missing its secret key.");
 
   const secretKey = fromBase64(parsed.secretKeyB64);

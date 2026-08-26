@@ -204,11 +204,25 @@ export function PostBounty() {
                 <HashBadge value={bytesToHex(keypair.publicKey)} />
               </div>
 
-              {freshlyGenerated && !backedUp && (
-                <Card style={{ padding: 14, borderColor: "rgba(255,95,110,.5)" }} className="stack">
-                  <div className="row" style={{ color: "var(--accent-red)" }}>
-                    <AlertTriangle size={16} /> Secret shown once — download the backup to continue.
-                  </div>
+              {freshlyGenerated && (
+                <Card
+                  style={{
+                    padding: 14,
+                    borderColor: backedUp ? "rgba(120,190,32,.5)" : "rgba(255,95,110,.5)",
+                  }}
+                  className="stack"
+                >
+                  {!backedUp ? (
+                    <div className="row" style={{ color: "var(--accent-red)" }}>
+                      <AlertTriangle size={16} /> Secret shown once — download the backup to
+                      continue.
+                    </div>
+                  ) : (
+                    <div className="row" style={{ color: "var(--accent-green)" }}>
+                      <CheckCircle2 size={16} /> Backed up. The secret stays below until you
+                      continue, in case the download needs repeating.
+                    </div>
+                  )}
                   <pre className="rawjson mono" style={{ margin: 0 }}>
                     {bytesToHex(keypair.secretKey)}
                   </pre>
@@ -227,11 +241,6 @@ export function PostBounty() {
                   Continue <ArrowRight size={15} />
                 </Button>
               </div>
-              {backedUp && (
-                <div className="row" style={{ color: "var(--accent-green)" }}>
-                  <CheckCircle2 size={15} /> Backed up
-                </div>
-              )}
             </div>
           )}
         </Card>
