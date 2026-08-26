@@ -83,15 +83,18 @@ contained in `lib/anchorClient`. All 32-byte values render as monospace truncate
 | `vite build` | **EXECUTED** | Buffer polyfill confirmed working in-bundle |
 | dev + preview serve 200, services off | **EXECUTED** | curl'd `/` on 5173 and 4173 |
 | v2 IDL correctness | **EXECUTED (partial)** | discriminator formula verified against the known `create_bounty` value; account/method namespaces probed at runtime via `@anchor-lang/core` (keys: config/bounty/receipt/reveal, createBounty/…); byte-exact field layouts derived from `state.rs` |
-| Read decode (Board/Detail/Leaderboard) against live data | **REASONED** | no localnet validator was available; decode logic derived from verified account layouts, not run against real accounts |
-| Wallet connect / signMessage / tx submit | **REASONED** | no wallet + validator in this headless env; wiring built to the wallet-adapter + Anchor 1.1.2 contracts |
-| seal_bounty / upload runner calls | **REASONED** | runner offline; client built to the documented request/response shapes, failure path exercised |
-| Sealed-box seal + open, X25519 keygen, sha256, intent msg | **EXECUTED (unit)** | libsodium + noble functions verified present and callable in node; end-to-end round-trip against a real Reveal is REASONED |
+| Read decode (Board/Detail/Leaderboard) against live data | **REASONED** | still not run against a live chain, but no longer blocked: `frontend/devrig/` stands up a seeded localnet in two commands (docs/frontend-testing.md) |
+| Wallet connect / signMessage / tx submit | **REASONED** | needs a human at a browser with Phantom; the rig airdrops to your wallet and seeds bounties so the walkthrough is a click-through, not a setup project |
+| seal_bounty / upload runner calls | **REASONED (against the real runner)** | `devrig/enclave.mjs` now serves both endpoints with the exact shapes `lib/runner.ts` sends, and its request/response contract is covered by `devrig/selftest.mjs` — but the real runner has never answered the browser (see gap 6) |
+| Sealed-box seal + open, X25519 keygen, sha256, intent msg | **EXECUTED (unit)** | libsodium + noble verified callable in node; `devrig/selftest.mjs` additionally round-trips BOTH hops (hunter→enclave, enclave→buyer) and asserts a wrong key returns null. A round-trip against a real on-chain Reveal is still REASONED |
+| SCB_VERDICT_V4 wire + operator attestation | **EXECUTED (unit)** | `devrig/selftest.mjs` asserts the 207-byte layout, the domain tag, PASS/FAIL differing only in the trailing byte, and raw-ed25519 signature verification |
 | Browser render (React mount) | **REASONED** | no headless browser; build + node module-load of anchor/web3/libsodium succeeded, so a module-load crash is ruled out |
 
-Bottom line: the toolchain gates are executed and green; the on-chain/enclave round-trips
-are built against verified contracts but not yet run against a live localnet (none was up).
-First integration step for whoever brings up localnet: §6.
+Bottom line unchanged: the toolchain gates are executed and green; the on-chain and enclave
+round-trips are built against verified contracts and are **still not run end to end**. What
+changed is the cost of running them — `frontend/devrig/` removes the setup work, so closing
+these rows is now a browser walkthrough (docs/frontend-testing.md), not an infrastructure
+project. Nothing in this table was promoted on the strength of the rig existing.
 
 ## 5. Dependency justification
 
@@ -110,13 +113,17 @@ hash router in `src/router`.
 
 ## 6. Known gaps / follow-ups
 
-1. **Live localnet integration not yet run.** Bring up `solana-test-validator`, deploy the
-   program, `initialize_config`, and post a bounty; then verify Board/Detail decode and the
-   full post→submit→resolve→decrypt loop. This is the REASONED→EXECUTED closing step.
+1. **Live localnet integration not yet run.** Still the REASONED→EXECUTED closing step, but
+   the scaffolding now exists: `frontend/devrig/` brings up the validator, deploys, seeds
+   bounties, and runs a mock enclave that issues real on-chain verdicts. Follow
+   `docs/frontend-testing.md`; the four scenarios there are exactly the rows above that are
+   still REASONED. Note the mock decides on the exploit text alone — it proves the frontend's
+   plumbing, never the protocol.
 2. **IDL regeneration.** The committed IDL was hand-regenerated (no v2 `anchor build` artifact
-   existed anywhere). After the next `anchor build`, replace `frontend/src/idl/*` with the real
-   `target/idl` + `target/types` output and re-run gates; the generator lives in the job scratch
-   dir for reference.
+   existed anywhere). `devrig/localnet.sh` runs `anchor build`, so a real `target/idl` +
+   `target/types` artifact appears the first time the rig is used — the script prints a reminder
+   rather than copying, because `src/idl/sealed_code_bounty.ts` carries a `DeepMutable<typeof IDL>`
+   wrapper the generated file lacks. Merge it deliberately, keep the wrapper, re-run the gates.
 3. **Bundle size.** Single ~1.31 MB chunk (wallet-adapter + web3 dominate). Fine for launch;
    route-level `import()` code-splitting is the obvious later win.
 4. **FAIL redacted_log.** The FAIL screen reports "rejected, slot reopened" from on-chain state.
@@ -124,3 +131,12 @@ hash router in `src/router`.
    defined today, so none is fabricated).
 5. **Explorer links.** tx signatures render as copyable hashes; wire cluster-aware explorer URLs
    once a canonical explorer is chosen.
+6. **The real runner has no CORS layer — HANDOFF to the `runner/` owner.** `lib/runner.ts`
+   sends `content-type: application/json`, which is not a CORS-simple request, so browsers
+   preflight it with `OPTIONS`. `runner/src/routes.rs` mounts its four `/internal` routes with
+   no CORS layer and no `OPTIONS` handler, so a direct browser call to `:8443` fails at the
+   preflight — against the real runner, not just the mock. The frontend now proxies
+   `/enclave → 127.0.0.1:8443` through the Vite dev server (`vite.config.ts`, `src/env.ts`),
+   which sidesteps it in development only. **Any browser-facing deployment still needs either a
+   CORS layer in the runner or a same-origin reverse proxy in front of it.** Not patched here:
+   `runner/` is outside the frontend lane.

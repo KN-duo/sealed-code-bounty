@@ -163,3 +163,14 @@ exploit, and understands the product without asking a question; every component 
 obvious, typed, replaceable; nothing spins forever, lies, or dies silently. Gates:
 `npm run build` (zero TS errors), `npm run lint`, dev server HTTP 200 with all side
 services OFF.
+
+## 8. M7 — local test rig (post-mission)
+
+The acceptance bar above describes a stranger with Phantom on localhost — but nothing in
+M1–M6 made that localhost exist. `frontend/devrig/` does: a WSL script for the chain half
+(validator + `anchor build` + `anchor deploy`) and a Node CLI on Windows for the rest
+(seeding, a mock enclave on `:8443`, and a relayer that lands real attested verdicts).
+Walkthrough and caveats: `docs/frontend-testing.md`.
+
+Shipped alongside it, a real defect the rig exposed: enclave calls needed a Vite dev proxy,
+because the runner answers no CORS preflight. See `docs/frontend-report.md` gap 6.
