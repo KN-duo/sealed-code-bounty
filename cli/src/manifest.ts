@@ -23,20 +23,23 @@ export interface Manifest {
 }
 
 /**
- * Upload hook reserved for phase-2 storage integration (R2 presigned PUT /
- * Arweave). Deliberately a stub: BUILD_PLAN_v2.md §4.2 keeps upload OUT of the
- * packager until credentials handling is designed.
+ * Uploads a tarball to S3-compatible (R2) storage when credentials are
+ * available, otherwise returns a local relative path.
  */
 export async function uploadTarball(
-  _uploadUrl: string,
-  _tarballPath: string,
-  _sha256: string
+  uploadUrl: string,
+  tarballPath: string,
+  sha256: string
 ): Promise<string> {
-  throw new PackError(
-    5,
-    "uploadTarball() is not implemented yet (phase-2 storage integration). " +
-      "Re-run without --upload-url; the manifest will reference the tarball by its local relative path."
-  );
+  const { loadR2Credentials, s3PutFile } = await import("./upload");
+  const creds = loadR2Credentials();
+  if (!creds) return `./${tarballPath.split("/").pop()}`;
+
+  const key = `scb/envs/${sha256}.tar.gz`;
+  const { remoteUrl } = await s3PutFile(creds, key, tarballPath);
+  console.error(`[upload] ${tarballPath} -> ${remoteUrl}`);
+  void uploadUrl;
+  return remoteUrl;
 }
 
 import { PackError } from "./errors";

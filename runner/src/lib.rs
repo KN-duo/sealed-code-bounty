@@ -2,6 +2,7 @@
 //! wrapper; integration tests exercise everything through this crate so the
 //! exact production code paths are what gets tested.
 
+pub mod blob_fetch;
 pub mod config;
 pub mod error;
 pub mod flag;

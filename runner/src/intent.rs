@@ -69,6 +69,7 @@ impl std::fmt::Display for IntentError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey};
     use sha2::{Digest, Sha256};
 
@@ -93,8 +94,7 @@ mod tests {
         // Flip one bit of the plaintext hash → different message → reject.
         let mut bad_hash = phash;
         bad_hash[0] ^= 0x01;
-        use base64::Engine as _;
-    // hex::encode available via hex crate at root
+        // hex::encode available via hex crate at root
         let b64sig = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
         assert!(matches!(
             verify_intent(&pda, &bad_hash, solver.verifying_key().as_bytes(), &b64sig),
@@ -123,11 +123,8 @@ mod tests {
 mod intent_vector {
     use super::*;
     use base64::Engine as _;
-    use ed25519_dalek::Signer as _;
     use sha2::{Digest, Sha256};
-    use base64::Engine as _;
-    // hex::encode available via hex crate at root
-    use ed25519_dalek::{Signer as _, SigningKey};
+    use ed25519_dalek::{Signer, SigningKey};
 
     /// Prints the canonical intent fixture when run with --nocapture.
     #[test]
@@ -157,8 +154,7 @@ mod intent_vector {
     }
 
     fn b64(b: &[u8]) -> String {
-        use base64::Engine as _;
-    // hex::encode available via hex crate at root
+        // hex::encode available via hex crate at root
         base64::engine::general_purpose::STANDARD.encode(b)
     }
 }

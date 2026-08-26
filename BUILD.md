@@ -28,3 +28,24 @@ At enclave boot: fetch M from KMS (attestation-gated), then derive:
 - verdict key = ed25519 seed `HKDF(M, info="scb-verdict-key-v1")`
 - enc key     = X25519    `HKDF(M, info="scb-enc-key-v1")`
 Keys are stable across redeploys; rotation = new info-string + multisig re-pin.
+
+## 3. Blob retention (Lane B)
+
+Bucket layout: `scb/envs/<sha256>.tar.gz` — the filename IS its SHA-256 hash.
+
+### Lifecycle rule (R2 / S3-compatible)
+Expire unregistered blobs after **30 days** from last modification:
+```
+Prefix: scb/envs/
+Action: Delete objects after 30 days from last modification
+```
+
+Objects referenced by a live bounty are never expired because their manifest
+pins them on-chain; the lifecycle rule only cleans up orphaned uploads that
+were never registered (abandoned pack runs, test artifacts).
+
+### Key derivation
+The packager computes `sha256(tarball)` during streaming upload and uses it
+as both the object key suffix AND the on-chain commitment. Two different
+tarballs can never collide because SHA-256 collision resistance is the
+security assumption of the protocol.
