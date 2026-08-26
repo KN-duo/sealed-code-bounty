@@ -94,6 +94,7 @@ mod tests {
         let mut bad_hash = phash;
         bad_hash[0] ^= 0x01;
         use base64::Engine as _;
+    // hex::encode available via hex crate at root
         let b64sig = base64::engine::general_purpose::STANDARD.encode(sig.to_bytes());
         assert!(matches!(
             verify_intent(&pda, &bad_hash, solver.verifying_key().as_bytes(), &b64sig),
@@ -110,5 +111,54 @@ mod tests {
     #[test]
     fn intent_length_matches_spec() {
         assert_eq!(INTENT_MSG_LEN, 77); // 13 tag (SCB_SUBMIT_V1) + 32 pda + 32 hash
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Cross-language fixture (Task 10): committed to test-vectors/intent_v1.json
+// so the TS client can assert byte-equality of its own builder.
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod intent_vector {
+    use super::*;
+    use base64::Engine as _;
+    use ed25519_dalek::Signer as _;
+    use sha2::{Digest, Sha256};
+    use base64::Engine as _;
+    // hex::encode available via hex crate at root
+    use ed25519_dalek::{Signer as _, SigningKey};
+
+    /// Prints the canonical intent fixture when run with --nocapture.
+    #[test]
+    fn dump_intent_vector() {
+        let pda_bytes = [0xABu8; 32];
+        let plaintext = b"exploit";
+        let plaintext_sha256 = {
+            let mut h = Sha256::new();
+            h.update(plaintext);
+            h.finalize().into()
+        };
+
+        let seed = [7u8; 32]; // deterministic test-key seed
+        let sk = SigningKey::from_bytes(&seed);
+        let msg = build_intent_message(&pda_bytes, &plaintext_sha256);
+        let sig = sk.sign(&msg);
+
+        eprintln!(
+            "INTENT {{\"intent_tag_ascii\":\"SCB_SUBMIT_V1\",\"bounty_pda_hex\":\"{}\",\"plaintext_utf8\":\"exploit\",\"plaintext_sha256_hex\":\"{}\",\"solver_secret_seed_hex\":\"{}\",\"message_hex\":\"{}\",\"signature_b64\":\"{}\",\"signature_hex\":\"{}\"}}",
+            hex::encode(pda_bytes),
+            hex::encode(plaintext_sha256),
+            hex::encode(seed),
+            hex::encode(msg),
+            b64(&sig.to_bytes()),
+            hex::encode(sig.to_bytes()),
+        );
+    }
+
+    fn b64(b: &[u8]) -> String {
+        use base64::Engine as _;
+    // hex::encode available via hex crate at root
+        base64::engine::general_purpose::STANDARD.encode(b)
     }
 }

@@ -33,11 +33,13 @@ async function main(): Promise<void> {
   }
   const idl = JSON.parse(fs.readFileSync(idlAbs, "utf8")) as unknown as SealedCodeBounty;
   // anchor 1.x derives the program id from idl.metadata.address.
-  const idlAddress = (idl as unknown as { metadata?: { address?: string } }).metadata?.address;
-  if (!idlAddress || idlAddress !== cfg.programId) {
-    throw new Error(
-      `PROGRAM_ID ${cfg.programId} does not match IDL metadata address ${idlAddress ?? "<none>"}`
-    );
+  // Anchor 0.x IDLs put the address at the top level; 1.x spec puts it in
+  // metadata. Accept either, and treat a missing address as "use PROGRAM_ID".
+  const idlAddress =
+    (idl as unknown as { address?: string }).address ??
+    (idl as unknown as { metadata?: { address?: string } }).metadata?.address;
+  if (idlAddress && idlAddress !== cfg.programId) {
+    throw new Error(`PROGRAM_ID ${cfg.programId} != IDL address ${idlAddress}`);
   }
 
   const connection = new Connection(cfg.rpcUrl, "confirmed");
@@ -71,35 +73,42 @@ async function main(): Promise<void> {
   };
 
   // ---- event ingestion ---------------------------------------------------
-  const listenerId: number = program.addEventListener(
-    "exploitSubmitted",
-    (event: {
-      bounty: PublicKey;
-      bountyId: BN;
-      solver: PublicKey;
-      exploitSha256: number[];
-    }, slot: number, sig: string) => {
-      const job: Job = {
-        bountyPda: new PublicKey(event.bounty),
-        solver: new PublicKey(event.solver),
-        bountyId: event.bountyId,
-        exploitSha256: Buffer.from(event.exploitSha256),
-      };
-      const added = queue.enqueue(job);
-      log.info(added ? "job enqueued" : "duplicate event ignored (dedupe)", {
-        bounty: job.bountyPda.toBase58(),
-        slot,
-        signature: sig.slice(0, 16) + "…",
-        queueDepth: queue.size,
-      });
-  });
-  log.info("listening for ExploitSubmitted", {
-    rpcUrl: cfg.rpcUrl,
-    programId: cfg.programId,
-    enclaveUrl: cfg.enclaveUrl,
-    feePayer: cfg.feePayer.publicKey.toBase58(),
-    operator: operatorPk.toBase58(),
-  });
+  // Retry event subscription on ECONNREFUSED (websocket port may not be
+  // ready immediately after validator startup — same backoff pattern as
+  // enclave calls).
+  let listenerId: number | undefined;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      listenerId = program.addEventListener(
+        "exploitSubmitted",
+        (event: {
+          bounty: PublicKey;
+          bountyId: BN;
+          solver: PublicKey;
+          exploitSha256: number[];
+        }, slot: number, sig: string) => {
+          const job: Job = {
+            bountyPda: new PublicKey(event.bounty),
+            solver: new PublicKey(event.solver),
+            bountyId: event.bountyId,
+            exploitSha256: Buffer.from(event.exploitSha256),
+          };
+          const added = queue.enqueue(job);
+          log.info(added ? "job enqueued" : "duplicate event ignored (dedupe)", {
+            bounty: job.bountyPda.toBase58(),
+            slot,
+            signature: sig.slice(0, 16) + "\u2026",
+            queueDepth: queue.size,
+          });
+        }
+      );
+      break;
+    } catch (e) {
+      if (attempt === 4) throw new Error(`event subscription failed after 5 attempts: ${e}`);
+      log.warn("event subscription failed; retrying", { attempt, error: String(e) });
+      await new Promise((r) => setTimeout(r, 1000 * (attempt + 1)));
+    }
+  }
 
   // ---- worker loop (single-flight; POLL_INTERVAL_MS per tick) -------------
   let running = true;
@@ -216,7 +225,7 @@ async function main(): Promise<void> {
     log.info("shutdown requested", { signal, pendingJobs: queue.size });
     running = false;
     clearInterval(timer);
-    void program.removeEventListener(listenerId).catch(() => {});
+    if (typeof listenerId === 'number') void program.removeEventListener(listenerId).catch(() => {});
     const leftover = queue.size;
     log.info("bye", { droppedJobs: leftover });
     process.exit(0);
