@@ -182,6 +182,9 @@ async function run(o: Opts): Promise<void> {
   });
   const tx = new Transaction().add(ix);
   const signature = await connection.sendTransaction(tx, [hunter]);
+  // Confirm OUR OWN registration tx before polling the verdict — otherwise
+  // the first status read races the landing transaction and misreports FAIL.
+  await connection.confirmTransaction(signature, "confirmed");
 
   // ---- g. optional verdict polling ----------------------------------------
   if (!o.wait) {
