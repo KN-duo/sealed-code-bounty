@@ -10,15 +10,17 @@ FROM ubuntu:24.04
 
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      gcc libc6-dev socat python3 python3-pip ttyd tmux less vim-tiny util-linux ca-certificates \
+      gcc libc6-dev socat python3 python3-pip ttyd tmux less nano vim util-linux ca-certificates \
  && pip install --break-system-packages pwntools \
  && rm -rf /var/lib/apt/lists/*
 
 # --- build the vulnerable target (static, no-pie: win() address is link-fixed) --
 WORKDIR /app
 COPY ret2win.c /app/src/ret2win.c
+# NOT stripped: solve.py resolves win() via elf.symbols["win"], which reads the
+# symbol table. Stripping removes it (KeyError: 'win'), and a hunter developing
+# an exploit wants the symbols anyway.
 RUN gcc -static -no-pie -fno-stack-protector -O0 -o /app/ret2win /app/src/ret2win.c \
- && strip /app/ret2win \
  && chmod 0755 /app/ret2win
 
 # --- the secret flag: readable only by root, so the hunter must exploit for it --
