@@ -3,14 +3,54 @@
 Supersedes `real-execution-plan.md` (folds it in) and connects it to the
 hunter-VM work.
 
-## What the user wants (verbatim intent)
+## What the user wants (refined intent, 2026-08-28)
 
-> A hunter uploads an exploit Python file. It runs in a VM. When it emits the
-> flag, the exploit is delivered to the bounty poster AND the hunter is paid —
-> all atomically.
+> The bounty's vulnerable programs run inside a TEE. A hunter uploads their
+> exploit (a **zip**) on the site where the bounty is listed. The exploit is sent
+> to the TEE, which unpacks it (to a home/work dir) and runs it. If the exploit
+> leaks the flag, the chain verifies the flag was truly captured; then the
+> exploit is delivered to the bounty creator AND the hunter is paid.
+> **PARAMOUNT: no one can read the exploit at any point until payment happens.
+> Only the TEE can see it, and only while executing.**
 
-This is SealedCodeBounty's original design, with the Docker VM (proven by the
-`hunter-vm/` POC) as the real execution engine.
+This is SealedCodeBounty's original design. The `hunter-vm/` POC proved the
+Docker execution mechanism; the verifier version of it runs inside the TEE.
+
+## Confidentiality is the paramount requirement — and it already exists in the crypto
+
+The exploit must be unreadable by anyone but the TEE until a successful payout.
+The scheme already delivers this:
+
+- The hunter seals the exploit with `crypto_box_seal` to the TEE's public key
+  (`Config.enclave_enc_pk`). It is ciphertext from the moment it leaves the
+  browser — the relayer, the chain, storage, and any observer see only the
+  sealed box.
+- Only the holder of `enclave_enc_secret` can open it (`runner/src/routes.rs`
+  `unseal`). Inside a real TEE that key is generated in-enclave and never leaves,
+  so **literally only the TEE can decrypt the exploit, and only in memory while
+  running it.**
+- On PASS the TEE re-seals the exploit to the BUYER's X25519 key and publishes it
+  as the `Reveal` — so the buyer receives it ONLY as part of the paying
+  transaction. On FAIL nothing is revealed and the plaintext is purged.
+
+**The honest constraint this creates:** the guarantee is only real in the TEE.
+Pre-TEE, `enclave_enc_secret` is an env var (`SCB_ENCLAVE_ENC_SECRET_HEX`), so the
+operator holds it and could in principle read exploits. Everything can be built
+and tested pre-TEE with an operator-held key; the "no one but the TEE" promise
+becomes true only when deployed in an AWS Nitro Enclave (needs AWS — Lane H).
+There is no pre-TEE shortcut that also keeps the confidentiality guarantee — the
+TEE IS the guarantee.
+
+## Exploit submission format: a zip
+
+The hunter uploads a **zip** (chosen over a bare .py so an exploit can carry
+helpers, data, a requirements pin). The TEE unseals it, unpacks it into the
+exploit container's work dir, and runs a defined entrypoint (default
+`exploit.py`; overridable via a small `scb-exploit.json` in the zip). Today the
+runner handles a single plaintext `exploit.py` (`sandbox.rs` writes `exploit.py`,
+runs `python3 exploit.py`) — extending this to unpack-and-run a zip is a
+contained change (S6 below), with the same safe-unpack caps already used for the
+target tarball (`runner/src/unpack.rs`).
 
 ## Two things that already exist — do not rebuild
 
@@ -100,6 +140,21 @@ relayer in the local loop. Build the runtime image once
 to load the bounty's tarball instead of the baked-in ret2win, so a hunter
 develops against the real target. Not required for payout; it's the workspace.
 
+**S6 — exploit as a zip.** The submission is a zip, not a bare .py. The TEE
+unseals it, unpacks it into the exploit container's work dir under the same safe
+caps as `unpack.rs` (size/file-count/traversal/symlink rejection), and runs the
+entrypoint (`exploit.py` by default, or a `scb-exploit.json`-declared command).
+The sealing/unsealing is unchanged — the sealed box just wraps zip bytes instead
+of python bytes.
+
+**S7 — TEE deployment (the confidentiality guarantee).** Build the runner as a
+reproducible Nitro Enclave image (`runner/runtime.Dockerfile` → EIF, per
+`BUILD.md`/`PLAN-PRE-TEE.md`), generate `enclave_enc_secret` inside the enclave
+so it never leaves, and attest the public key that gets pinned on-chain. This is
+what makes "only the TEE can read the exploit" literally true. Needs an AWS
+account with Nitro Enclaves (Lane H). Everything else is built and tested
+pre-TEE; this step swaps the operator-held key for an enclave-held one.
+
 ## Phases (sequenced)
 
 - **P0 — the judging engine, standalone.** Real runner + `SCB_SANDBOX=docker` +
@@ -117,9 +172,15 @@ develops against the real target. Not required for payout; it's the workspace.
   mock in the local loop. Gate: browser submit → Docker-judged PASS →
   `resolve_with_attestation` pays the hunter, seals the exploit to the buyer, and
   the buyer decrypts it. The full cycle.
-- **P4 — interactive VM per bounty (S5), optional.** hunter-vm serves the
-  bounty's target; embed the terminal in the hunt page.
-- **P5 — TEE (later).** Wrap the identical runner per `PLAN-PRE-TEE.md`.
+- **P4 — exploit as a zip (S6).** Submission is a zip; TEE unpacks + runs the
+  entrypoint. Gate: a multi-file zip exploit judged end to end.
+- **P5 — interactive VM per bounty (S5), optional.** hunter-vm serves the
+  bounty's target; embed the terminal in the hunt page for exploit development.
+- **P6 — TEE deployment (S7): the confidentiality guarantee.** Runner as an
+  attested Nitro Enclave, key born in-enclave. This is the phase that makes the
+  exploit truly unreadable by anyone but the TEE. Gated on AWS (Lane H). Until
+  this ships, the flow works but the operator technically holds the key — so
+  P6 is required before real bounties with real money and real secret exploits.
 
 ## Lane / ownership
 Spans `runner/`, `relayer/`, `cli/`, `frontend/`, and `hunter-vm/` — multiple
