@@ -34,5 +34,8 @@ RUN chown -R hunter:hunter /home/hunter
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Land the browser shell in the hunter's home (where solve.py is), not /app.
+WORKDIR /home/hunter
+
 EXPOSE 7681
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

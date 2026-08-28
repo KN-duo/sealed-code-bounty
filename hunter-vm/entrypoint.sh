@@ -11,6 +11,11 @@ set -e
 socat TCP-LISTEN:1337,reuseaddr,fork EXEC:"/app/ret2win",pty,raw,echo=0 &
 
 # 2. browser terminal as the unprivileged hunter user.
+#    setpriv drops privileges but does not fix HOME/USER (they stay root's), so
+#    set them explicitly — otherwise `bash --login` tries to read /root/... and
+#    the shell lands in the wrong place. WORKDIR /home/hunter (Dockerfile) makes
+#    the shell start in the hunter's home, where solve.py lives.
 #    ttyd flags: -p port, -i interface, -W writable (accept keyboard input).
 exec setpriv --reuid=hunter --regid=hunter --init-groups \
+    env HOME=/home/hunter USER=hunter TERM=xterm-256color \
     ttyd -p 7681 -i 0.0.0.0 -W bash --login
