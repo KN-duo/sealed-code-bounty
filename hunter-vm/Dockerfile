@@ -10,7 +10,7 @@ FROM ubuntu:24.04
 
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      gcc socat python3 python3-pip ttyd tmux less vim-tiny util-linux ca-certificates \
+      gcc libc6-dev socat python3 python3-pip ttyd tmux less vim-tiny util-linux ca-certificates \
  && pip install --break-system-packages pwntools \
  && rm -rf /var/lib/apt/lists/*
 
