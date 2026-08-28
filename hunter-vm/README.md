@@ -40,7 +40,7 @@ docker rm -f hunter-vm
 
 ## What's inside
 
-- **The target** (`target/ret2win.c`) — built static/no-pie, served on
+- **The target** (`ret2win.c`) — built static/no-pie, served on
   `localhost:1337` inside the container by socat, running as root so it can read
   the root-only `/flag`.
 - **ttyd** — serves the browser terminal on `:7681`, running a shell as the

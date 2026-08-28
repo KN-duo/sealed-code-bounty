@@ -16,7 +16,7 @@ RUN apt-get update \
 
 # --- build the vulnerable target (static, no-pie: win() address is link-fixed) --
 WORKDIR /app
-COPY target/ret2win.c /app/src/ret2win.c
+COPY ret2win.c /app/src/ret2win.c
 RUN gcc -static -no-pie -fno-stack-protector -O0 -o /app/ret2win /app/src/ret2win.c \
  && strip /app/ret2win \
  && chmod 0755 /app/ret2win
