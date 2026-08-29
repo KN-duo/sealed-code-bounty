@@ -84,13 +84,25 @@ async function startWorkspace(bountyPda) {
 
     // Give the hunter the target binary to poke at, best-effort.
     await docker(["cp", `${targetName}:/app/ret2win`, "/tmp/scb-ws-bin-" + uniq]).catch(() => {});
-    await docker(["cp", "/tmp/scb-ws-bin-" + uniq, `${shellName}:/home/hunter/target-binary`]).catch(() => {});
+    await docker(["cp", "/tmp/scb-ws-bin-" + uniq, `${shellName}:/root/target-binary`]).catch(() => {});
 
-    // Discover the mapped host port.
-    const portRes = await docker(["port", shellName, "7681"]);
-    const m = portRes.stdout.match(/:(\d+)\s*$/m);
-    if (!m) throw new Error(`could not read published port: ${portRes.stdout}${portRes.stderr}`);
-    const port = Number(m[1]);
+    // Let ttyd bind, then read the published host port from the container's own
+    // port map (more reliable than parsing `docker port`).
+    await new Promise((r) => setTimeout(r, 800));
+    const insp = await docker([
+      "inspect", "-f",
+      '{{if .State.Running}}{{with index .NetworkSettings.Ports "7681/tcp"}}{{(index . 0).HostPort}}{{end}}{{else}}exited{{end}}',
+      shellName,
+    ]);
+    const val = insp.stdout.trim();
+    if (val === "exited" || val === "") {
+      // The shell container died (or never published) — surface WHY.
+      const logs = await docker(["logs", "--tail", "25", shellName]);
+      const why = (logs.stdout + logs.stderr).trim().slice(-600) || val || "no output";
+      throw new Error(`practice shell did not start (${WORKSPACE_IMAGE}). container log: ${why}`);
+    }
+    const port = Number(val);
+    if (!Number.isFinite(port) || port <= 0) throw new Error(`unexpected published port: "${val}"`);
 
     const id = uniq;
     sessions.set(id, { net, target: targetName, shell: shellName, port, teardown, createdAt: Date.now() });
