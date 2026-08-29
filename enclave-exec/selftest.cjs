@@ -123,6 +123,10 @@ async function runCase(label, exploitBytes, buyer, expectPass, target) {
     PORT: String(PORT),
     SCB_MASTER_SECRET_HEX: hex(32),
     SCB_ENCLAVE_ENC_SECRET_HEX: hex(32),
+    // This offline test decrypts the reveal inline (no chain, no tx-size limit,
+    // no network to Arweave). The on-chain flow uses Arweave — proven separately.
+    SCB_REVEAL_STORE: "inline",
+    SCB_INLINE_MAX: "1000000",
   };
   const child = spawn("node", [path.join(__dirname, "enclave.cjs")], { env, stdio: ["ignore", "inherit", "inherit"] });
   const kill = () => { try { child.kill("SIGKILL"); } catch { /* gone */ } };

@@ -38,6 +38,45 @@ async function docker(args, opts = {}) {
 }
 
 /**
+ * Build a target image from a public GitHub repo (pwn.college style). The repo
+ * root (or a subdir) must contain a Dockerfile following the target conventions.
+ * @param {string} repo  "owner/name", a full https URL, or "owner/name#subdir"
+ * @param {string} tag   the image tag to build
+ * @returns {Promise<{tag:string}>}
+ */
+export async function buildTargetFromGit(repo, tag) {
+  // Accept "owner/name", "owner/name#subdir", or a full https URL (optionally #subdir).
+  let spec = String(repo).trim().replace(/^https?:\/\/github\.com\//, "");
+  let subdir = "";
+  const hash = spec.indexOf("#");
+  if (hash >= 0) {
+    subdir = spec.slice(hash + 1).replace(/^\/+|\.\.+/g, "");
+    spec = spec.slice(0, hash);
+  }
+  if (!/^[\w.-]+\/[\w.-]+$/.test(spec)) {
+    throw new Error(`invalid repo "${repo}" — expected owner/name, owner/name#subdir, or a github URL`);
+  }
+  const url = `https://github.com/${spec}.git`;
+
+  const dir = await mkdtemp(path.join(tmpdir(), "scb-target-git-"));
+  try {
+    const clone = await docker0("git", [
+      "clone", "--depth", "1", "--no-tags", "--single-branch", url, path.join(dir, "repo"),
+    ]);
+    if (clone.code !== 0) throw new Error(`git clone failed: ${clone.stderr.trim().slice(-800)}`);
+
+    const ctx = subdir ? path.join(dir, "repo", subdir) : path.join(dir, "repo");
+    const build = await docker(["build", "-t", tag, "."], { cwd: ctx, timeoutMs: BUILD_TIMEOUT_MS });
+    if (build.code !== 0) {
+      throw new Error(`docker build failed: ${(build.stderr || build.stdout).trim().slice(-1500)}`);
+    }
+    return { tag };
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+}
+
+/**
  * Build a target image from a source-bundle zip.
  * @param {Uint8Array|Buffer} zipBytes  a zip containing a Dockerfile + files
  * @param {string} tag                  the image tag to build (e.g. scb-bounty-<pda8>)

@@ -55,6 +55,7 @@ export interface SealBountyResponse {
 // title/description is supplied hunters see it on the bounty page.
 export interface BountyTarget {
   source_zip_b64?: string; // zip of Dockerfile + files
+  source_git?: string; // OR a public GitHub repo: owner/name[#subdir]
   port?: number; // the vulnerable service's TCP port
   title?: string;
   description?: string;

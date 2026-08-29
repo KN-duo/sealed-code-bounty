@@ -184,21 +184,25 @@ const server = http.createServer((req, res) => {
         // Per-bounty target: build the company's uploaded source into an image
         // now, so judging runs against THEIR program (not the baked ret2win). A
         // bounty with no target falls back to the demo target.
-        if (target && (target.source_zip_b64 || target.source_url)) {
-          let zip;
-          if (target.source_zip_b64) {
-            zip = Buffer.from(target.source_zip_b64, "base64");
-          } else {
-            const r = await fetch(target.source_url);
-            if (!r.ok) return respond(502, { error: `could not fetch target source: HTTP ${r.status}` });
-            zip = Buffer.from(await r.arrayBuffer());
-          }
-          const { buildTargetImage } = await import(
-            pathToFileURL(path.join(__dirname, "target-build.mjs")).href
-          );
+        if (target && (target.source_zip_b64 || target.source_url || target.source_git)) {
+          const build = await import(pathToFileURL(path.join(__dirname, "target-build.mjs")).href);
           const tag = `scb-bounty-${bounty_pda.slice(0, 12).toLowerCase()}`;
-          log("building_target", { bounty: bounty_pda, tag });
-          await buildTargetImage(zip, tag);
+          if (target.source_git) {
+            // pwn.college-style: build straight from a public GitHub repo.
+            log("building_target", { bounty: bounty_pda, tag, from: "git", repo: target.source_git });
+            await build.buildTargetFromGit(target.source_git, tag);
+          } else {
+            let zip;
+            if (target.source_zip_b64) {
+              zip = Buffer.from(target.source_zip_b64, "base64");
+            } else {
+              const r = await fetch(target.source_url);
+              if (!r.ok) return respond(502, { error: `could not fetch target source: HTTP ${r.status}` });
+              zip = Buffer.from(await r.arrayBuffer());
+            }
+            log("building_target", { bounty: bounty_pda, tag, from: "zip" });
+            await build.buildTargetImage(zip, tag);
+          }
           targets.set(bounty_pda, {
             image: tag,
             port: Number(target.port) || 1337,

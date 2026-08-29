@@ -68,6 +68,7 @@ export function PostBounty() {
   // source the enclave uses its demo target.
   const [targetZipB64, setTargetZipB64] = useState<string | null>(null);
   const [targetName, setTargetName] = useState<string | null>(null);
+  const [targetGit, setTargetGit] = useState("");
   const [targetPort, setTargetPort] = useState(1337);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -130,7 +131,10 @@ export function PostBounty() {
       // 1) enclave seals the environment (building the company's target if one
       //    was uploaded) and returns the flag commitment.
       const target: BountyTarget = {};
-      if (targetZipB64) {
+      if (targetGit.trim()) {
+        target.source_git = targetGit.trim();
+        target.port = targetPort;
+      } else if (targetZipB64) {
         target.source_zip_b64 = targetZipB64;
         target.port = targetPort;
       }
@@ -285,9 +289,19 @@ export function PostBounty() {
               onChange={(e) => setDescription(e.target.value)}
             />
           </Field>
+          <Field
+            label="Target from GitHub"
+            hint="Public repo with a Dockerfile: owner/name, owner/name#subdir, or a github URL. Easiest — the verifier clones and builds it."
+          >
+            <Input
+              value={targetGit}
+              placeholder="your-org/vulnerable-service"
+              onChange={(e) => setTargetGit(e.target.value)}
+            />
+          </Field>
           <div className="two-col">
             <Field
-              label="Target source (.zip)"
+              label="…or upload source (.zip)"
               hint="A zip of your Dockerfile + files. Serve on a port; keep the secret at root-only /flag. See enclave-exec/example-target."
             >
               <input
@@ -323,9 +337,9 @@ export function PostBounty() {
               />
             </Field>
           </div>
-          {!targetZipB64 && (
+          {!targetZipB64 && !targetGit.trim() && (
             <p className="dim" style={{ fontSize: 13, marginTop: -4 }}>
-              No target uploaded → the demo ret2win target is used.
+              No target given → the demo ret2win target is used.
             </p>
           )}
 
