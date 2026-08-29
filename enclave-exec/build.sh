@@ -11,6 +11,9 @@ docker build -t scb-target -f "$DIR/target.Dockerfile" "$DIR"
 echo "==> building runtime image (scb-runtime)"
 docker build -t scb-runtime -f "$DIR/runtime.Dockerfile" "$DIR"
 
+echo "==> building workspace image (scb-workspace)"
+docker build -t scb-workspace -f "$DIR/workspace.Dockerfile" "$DIR"
+
 echo "==> done. images:"
 docker image ls | grep -E 'scb-target|scb-runtime' || true
 echo

@@ -102,6 +102,16 @@ OPERATOR_PUBKEY="$OPERATOR_PUB" ENCLAVE_URL="http://127.0.0.1:$ENCLAVE_PORT" POL
 npm --prefix relayer run start >"$WORK/relayer.log" 2>&1 &
 PIDS+=("$!")
 
+say "start workspace service (per-bounty practice VMs)"
+if docker image inspect scb-workspace >/dev/null 2>&1; then
+  SCB_WORKSPACE_PORT=8080 node enclave-exec/workspace-service.mjs >"$WORK/workspace.log" 2>&1 &
+  PIDS+=("$!")
+  echo "workspace service on :8080"
+else
+  echo "! scb-workspace image missing — 'Open test environment' will be unavailable."
+  echo "  build it: bash enclave-exec/build.sh"
+fi
+
 # --- point the frontend at this backend -----------------------------------
 cat > frontend/.env.local <<EOF
 # Written by enclave-exec/serve-local.sh — points the site at this localnet + enclave.

@@ -72,6 +72,37 @@ export interface Challenge {
   description: string;
   port: number;
 }
+// Per-bounty practice environment: ask the workspace service to spin up the
+// bounty's target next to a browser terminal, and return the terminal URL.
+export interface Workspace {
+  id: string;
+  url: string;
+  expiresInS: number;
+  targetImage?: string;
+}
+export async function startWorkspace(bountyPda: string): Promise<Workspace> {
+  let res: Response;
+  try {
+    res = await fetch("/workspace-api/workspace", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bounty_pda: bountyPda }),
+    });
+  } catch {
+    throw new RunnerError("Could not reach the workspace service. Is it running (serve-local.sh)?");
+  }
+  if (!res.ok) {
+    let detail = "";
+    try {
+      detail = (await res.json()).error ?? "";
+    } catch {
+      /* ignore */
+    }
+    throw new RunnerError(`Workspace service returned ${res.status}${detail ? `: ${detail}` : ""}.`);
+  }
+  return (await res.json()) as Workspace;
+}
+
 export async function getChallenge(bountyPda: string): Promise<Challenge | null> {
   try {
     const res = await fetch(`${ENCLAVE_URL}/internal/challenge/${encodeURIComponent(bountyPda)}`);

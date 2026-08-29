@@ -9,6 +9,10 @@ import react from "@vitejs/plugin-react";
 // Keep this prefix in sync with DEV_ENCLAVE_PREFIX in src/env.ts.
 const ENCLAVE_PREFIX = "/enclave";
 const ENCLAVE_TARGET = process.env.VITE_ENCLAVE_PROXY_TARGET ?? "http://127.0.0.1:8443";
+// The workspace service (per-bounty practice VMs) — same reasoning, proxied so
+// the browser call stays same-origin.
+const WORKSPACE_PREFIX = "/workspace-api";
+const WORKSPACE_TARGET = process.env.VITE_WORKSPACE_PROXY_TARGET ?? "http://127.0.0.1:8080";
 
 // `global` shim: @solana/web3.js and its deps reference the Node `global`, which
 // the browser lacks. Buffer itself is polyfilled in src/polyfills.ts.
@@ -23,6 +27,11 @@ export default defineConfig({
         target: ENCLAVE_TARGET,
         changeOrigin: true,
         rewrite: (path) => path.replace(new RegExp(`^${ENCLAVE_PREFIX}`), ""),
+      },
+      [WORKSPACE_PREFIX]: {
+        target: WORKSPACE_TARGET,
+        changeOrigin: true,
+        rewrite: (path) => path.replace(new RegExp(`^${WORKSPACE_PREFIX}`), ""),
       },
     },
   },

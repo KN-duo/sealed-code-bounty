@@ -11,6 +11,7 @@ import {
   PartyPopper,
   ShieldAlert,
   Terminal,
+  TerminalSquare,
   XCircle,
 } from "lucide-react";
 import { AsyncView } from "../components/ui/states";
@@ -30,7 +31,7 @@ import {
 } from "../lib/crypto";
 import { bytesToHex, explorerTxUrl } from "../lib/format";
 import { fetchBounty } from "../lib/anchorClient";
-import { uploadExploit } from "../lib/runner";
+import { startWorkspace, uploadExploit } from "../lib/runner";
 import { submitExploit, txErrorMessage } from "../lib/tx";
 import type { Bounty, ProtocolConfig } from "../lib/types";
 
@@ -113,6 +114,21 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
   const [log, setLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [txSig, setTxSig] = useState<string | null>(null);
+  const [wsBusy, setWsBusy] = useState(false);
+  const [wsError, setWsError] = useState<string | null>(null);
+
+  async function openWorkspace() {
+    setWsError(null);
+    setWsBusy(true);
+    try {
+      const ws = await startWorkspace(bounty.pda);
+      window.open(ws.url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      setWsError(e instanceof Error ? e.message : "Could not start the test environment.");
+    } finally {
+      setWsBusy(false);
+    }
+  }
   const watching = useRef(false);
 
   const addLog = (line: string) => setLog((l) => [...l, line]);
@@ -346,6 +362,28 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
           </span>
         </Card>
       )}
+
+      <Card style={{ padding: 18 }} className="stack">
+        <div className="spread" style={{ gap: 12, flexWrap: "wrap" }}>
+          <div>
+            <div className="row" style={{ gap: 8 }}>
+              <TerminalSquare size={16} color="var(--accent-cyan)" />
+              <strong>Test environment</strong>
+            </div>
+            <p className="dim" style={{ margin: "4px 0 0", fontSize: 13 }}>
+              A live terminal with the target running, to develop your exploit before submitting.
+            </p>
+          </div>
+          <Button onClick={openWorkspace} loading={wsBusy}>
+            {wsBusy ? "Starting…" : "Open test environment"}
+          </Button>
+        </div>
+        {wsError && (
+          <div className="row" style={{ color: "var(--accent-red)", fontSize: 13 }}>
+            <XCircle size={14} /> {wsError}
+          </div>
+        )}
+      </Card>
 
       <Card style={{ padding: 22 }} className="stack">
         <Field
