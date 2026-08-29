@@ -15,7 +15,7 @@
 
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { spawn } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 const { readFileSync } = require("node:fs");
 
 const DEP_BASES = [
@@ -59,12 +59,17 @@ async function waitUp(tries = 60) {
   throw new Error("enclave did not come up");
 }
 
-async function runCase(label, exploitBytes, buyer, expectPass) {
+async function runCase(label, exploitBytes, buyer, expectPass, target) {
   // A distinct bounty PDA per case (any 32-byte base58 works for the test).
   const bountyPda = Keypair.generate().publicKey.toBase58();
   const solver = Keypair.generate().publicKey.toBase58();
 
-  const seal = await jpost("/internal/seal_bounty", { bounty_pda: bountyPda });
+  // `target` (optional): { source_zip_b64, port } — the enclave builds it and
+  // judges against it instead of the baked demo target.
+  const sealBody = { bounty_pda: bountyPda };
+  if (target) sealBody.target = target;
+  process.stderr.write(target ? `  [${label}] building the company target (docker build)...\n` : "");
+  const seal = await jpost("/internal/seal_bounty", sealBody);
   if (seal.status !== 200) throw new Error(`seal_bounty failed: ${JSON.stringify(seal.json)}`);
   const commitment = seal.json.flag_commitment;
 
@@ -131,6 +136,18 @@ async function runCase(label, exploitBytes, buyer, expectPass) {
     const broken = readFileSync(path.join(REPO, "examples/ret2win/solution/solve-broken.py"));
     if (!(await runCase("PASS (solve.py)", solve, buyer, true))) failures++;
     if (!(await runCase("FAIL (solve-broken.py)", broken, buyer, false))) failures++;
+
+    // Per-bounty target: build the example-target from source and judge against
+    // it (proves a company can upload their own program, not the baked one).
+    try {
+      const zip = execFileSync("bash", ["-c", "cd enclave-exec/example-target && zip -qr - ."], {
+        cwd: REPO, maxBuffer: 64 * 1024 * 1024,
+      });
+      const target = { source_zip_b64: zip.toString("base64"), port: 1337 };
+      if (!(await runCase("PASS (per-bounty target, built from source)", solve, buyer, true, target))) failures++;
+    } catch (e) {
+      console.log(`  SKIP  per-bounty target case (${e && e.message}) — needs the 'zip' tool`);
+    }
   } catch (e) {
     console.error(`\n  error: ${e && e.message}`);
     failures++;

@@ -124,6 +124,7 @@ function buildMessage(pdaB58, envHex, exploitHex, solverB58, commitHex, buyerPkH
 const flags = new Map();        // pda -> flag string (secret, never leaves)
 const commitments = new Map();  // pda -> commitment hex (public)
 const uploads = new Map();      // pda -> { exploit: Buffer, chain_view, solver_pubkey }
+const targets = new Map();      // pda -> { image, port, copyBinary } for per-bounty targets
 
 // judge() is ESM; load it once.
 let judgeFn = null;
@@ -165,13 +166,43 @@ const server = http.createServer((req, res) => {
   }
 
   if (req.method === "POST" && req.url === "/internal/seal_bounty") {
-    return readBody(({ bounty_pda }) => {
-      if (!bounty_pda) return respond(400, { error: "bounty_pda required" });
-      const flag = deriveFlag(bounty_pda);
-      const commit = flagCommitment(flag);
-      flags.set(bounty_pda, flag);
-      commitments.set(bounty_pda, commit);
-      respond(200, { flag_commitment: commit });
+    return readBody(async ({ bounty_pda, target }) => {
+      try {
+        if (!bounty_pda) return respond(400, { error: "bounty_pda required" });
+        const flag = deriveFlag(bounty_pda);
+        const commit = flagCommitment(flag);
+        flags.set(bounty_pda, flag);
+        commitments.set(bounty_pda, commit);
+
+        // Per-bounty target: build the company's uploaded source into an image
+        // now, so judging runs against THEIR program (not the baked ret2win). A
+        // bounty with no target falls back to the demo target.
+        if (target && (target.source_zip_b64 || target.source_url)) {
+          let zip;
+          if (target.source_zip_b64) {
+            zip = Buffer.from(target.source_zip_b64, "base64");
+          } else {
+            const r = await fetch(target.source_url);
+            if (!r.ok) return respond(502, { error: `could not fetch target source: HTTP ${r.status}` });
+            zip = Buffer.from(await r.arrayBuffer());
+          }
+          const { buildTargetImage } = await import(
+            pathToFileURL(path.join(__dirname, "target-build.mjs")).href
+          );
+          const tag = `scb-bounty-${bounty_pda.slice(0, 12).toLowerCase()}`;
+          log("building_target", { bounty: bounty_pda, tag });
+          await buildTargetImage(zip, tag);
+          targets.set(bounty_pda, {
+            image: tag,
+            port: Number(target.port) || 1337,
+            copyBinary: target.copy_binary === undefined ? null : target.copy_binary,
+          });
+          log("target_built", { bounty: bounty_pda, tag });
+        }
+        respond(200, { flag_commitment: commit });
+      } catch (e) {
+        respond(500, { error: "seal_bounty failed: " + String((e && e.message) || e) });
+      }
     });
   }
 
@@ -233,7 +264,11 @@ const server = http.createServer((req, res) => {
 
         // === REAL EXECUTION: run the exploit against the target, in Docker. ===
         const judge = await getJudge();
-        const result = await judge(rec.exploit, { flag });
+        const target = targets.get(bounty_pda);
+        const judgeOpts = target
+          ? { flag, targetImage: target.image, targetPort: target.port, copyBinary: target.copyBinary }
+          : { flag };
+        const result = await judge(rec.exploit, judgeOpts);
         const outcome = result.pass;
         log("verdict", { bounty: bounty_pda, outcome, reason: result.reason });
 

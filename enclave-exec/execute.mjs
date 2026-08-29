@@ -58,6 +58,9 @@ async function docker(args, { timeoutMs } = {}) {
  */
 export async function judge(exploitBytes, opts = {}) {
   const flag = opts.flag ?? `flag{${randomBytes(16).toString("hex")}}`;
+  const targetImage = opts.targetImage ?? TARGET_IMAGE; // per-bounty image, or the baked default
+  const targetPort = opts.targetPort ?? TARGET_PORT;
+  const copyBinary = opts.copyBinary ?? "/app/ret2win"; // convenience: give the exploit the target binary (null to skip)
   const uniq = randomBytes(8).toString("hex");
   const net = `scb-net-${uniq}`;
   const targetName = `scb-target-${uniq}`;
@@ -83,10 +86,10 @@ export async function judge(exploitBytes, opts = {}) {
       "run", "-d", "--name", targetName,
       "--network", net, "--network-alias", "target",
       "--memory", "256m", "--cpus", "1",
-      TARGET_IMAGE,
+      targetImage,
     ]);
     if (tRes.code !== 0) {
-      return fail(flag, "", `could not start target (is ${TARGET_IMAGE} built?): ${tRes.stderr.trim()}`);
+      return fail(flag, "", `could not start target (is ${targetImage} built?): ${tRes.stderr.trim()}`);
     }
 
     // 3. Inject the fresh secret flag into the running target.
@@ -109,7 +112,9 @@ export async function judge(exploitBytes, opts = {}) {
     //    helpers/data). We detect the zip magic and, inside the sandbox, unpack
     //    it and run its entrypoint. entrypoint = `exploit.py` by default, or the
     //    "entrypoint" field of a top-level scb-exploit.json in the zip.
-    await docker(["cp", `${targetName}:/app/ret2win`, path.join(work, "ret2win")]).catch(() => {});
+    if (copyBinary) {
+      await docker(["cp", `${targetName}:${copyBinary}`, path.join(work, "ret2win")]).catch(() => {});
+    }
     const bytes = Buffer.from(exploitBytes);
     const isZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b &&
       (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07);
@@ -126,11 +131,11 @@ export async function judge(exploitBytes, opts = {}) {
         '  EP=$(python3 -c "import json,sys; print(json.load(open(\\"scb-exploit.json\\")).get(\\"entrypoint\\",\\"exploit.py\\"))"); ' +
         'fi; ' +
         'cp -n /work/ret2win ./ret2win 2>/dev/null || true; ' +
-        'exec timeout ' + EXPLOIT_TIMEOUT_S + ' python3 "$EP" target ' + TARGET_PORT;
+        'exec timeout ' + EXPLOIT_TIMEOUT_S + ' python3 "$EP" target ' + targetPort;
       runCmd = ["sh", "-c", script];
     } else {
       await writeFile(path.join(work, "exploit.py"), bytes);
-      runCmd = ["timeout", String(EXPLOIT_TIMEOUT_S), "python3", "exploit.py", "target", String(TARGET_PORT)];
+      runCmd = ["timeout", String(EXPLOIT_TIMEOUT_S), "python3", "exploit.py", "target", String(targetPort)];
     }
 
     // 6. Run the exploit, isolated, with a hard wall-clock timeout. It reaches
