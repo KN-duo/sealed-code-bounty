@@ -22,6 +22,7 @@ import { useProgram } from "../hooks/useProgram";
 import { useConfig } from "../hooks/useData";
 import { downloadBackup } from "../lib/backup";
 import { bytesToHex, hexToBytes, solToLamports } from "../lib/format";
+import { sha256Bytes } from "../lib/crypto";
 import { buildManifest, downloadManifest, manifestSha256Hex, validateForm } from "../lib/manifest";
 import type { ManifestForm, TargetKind } from "../lib/manifest";
 import { bountyPda } from "../lib/pda";
@@ -92,6 +93,8 @@ export function PostBounty() {
     [wallet.publicKey, bountyId],
   );
 
+  const hasTarget = Boolean(targetGit.trim() || targetZipB64);
+
   // -- wallet gate ---------------------------------------------------------
   if (!wallet.publicKey) {
     return (
@@ -126,7 +129,12 @@ export function PostBounty() {
     try {
       const manifest = buildManifest(form);
       const manifestSha = hexToBytes(manifestSha256Hex(manifest));
-      const envBlobSha = hexToBytes(form.imageSha256.trim());
+      // With a GitHub/zip target the environment blob is built by the verifier,
+      // not pinned from a tarball hash, so derive a stable placeholder for the
+      // on-chain env_blob_sha256 instead of demanding one.
+      const envBlobSha = hasTarget
+        ? sha256Bytes(new TextEncoder().encode(`scb-target:${targetGit.trim() || targetName || "zip"}`))
+        : hexToBytes(form.imageSha256.trim());
 
       // 1) enclave seals the environment (building the company's target if one
       //    was uploaded) and returns the flag commitment.
@@ -164,7 +172,11 @@ export function PostBounty() {
     }
   }
 
-  const formErrors = validateForm(form);
+  // The tarball-URL manifest is only needed without a built target; with a
+  // GitHub/zip target those fields are hidden and their validation skipped.
+  const formErrors = hasTarget
+    ? validateForm(form).filter((e) => !/image tarball/i.test(e))
+    : validateForm(form);
   const prizeValid = Number(prizeSol) > 0;
   const deadlineValid = new Date(deadlineLocal).getTime() > Date.now();
 
@@ -343,6 +355,13 @@ export function PostBounty() {
             </p>
           )}
 
+          {hasTarget ? (
+            <p className="dim" style={{ fontSize: 13 }}>
+              The verifier builds and pins the environment from your target above — no
+              tarball URL needed.
+            </p>
+          ) : (
+          <>
           <h3 style={{ marginTop: 8 }}>Environment manifest</h3>
           <p className="dim" style={{ marginTop: 0 }}>
             The environment the verifier boots and the rules it runs under (schema v2).
@@ -405,6 +424,8 @@ export function PostBounty() {
               onChange={(e) => setForm({ ...form, flagPlaceholder: e.target.value })}
             />
           </Field>
+          </>
+          )}
 
           <div className="two-col">
             <Field label="Prize (SOL)">
