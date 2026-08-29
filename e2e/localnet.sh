@@ -29,7 +29,7 @@ export PROGRAM_ID="FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
 export RPC_URL="http://127.0.0.1:8899"
 
 WORK="$(mktemp -d /tmp/scb-e2e.XXXXXX)"
-echo "WORK=$WORK" > /tmp/opencode/work.txt
+echo "WORK=$WORK" > "$WORK/work.txt"
 VAL_LOG="$WORK/validator.log"
 REL_LOG="$WORK/relayer.log"
 MOCK_LOG="$WORK/mock.log"
