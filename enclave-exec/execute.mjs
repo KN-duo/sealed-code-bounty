@@ -104,9 +104,34 @@ export async function judge(exploitBytes, opts = {}) {
     await new Promise((res) => setTimeout(res, Number(process.env.SCB_TARGET_WARMUP_MS ?? 2000)));
 
     // 5. Provide the target binary to the exploit workdir (many exploits read
-    //    symbols from it), and stage the exploit as exploit.py.
+    //    symbols from it), and stage the submission. A submission is either a
+    //    single python file or a ZIP (the product's format — an exploit can carry
+    //    helpers/data). We detect the zip magic and, inside the sandbox, unpack
+    //    it and run its entrypoint. entrypoint = `exploit.py` by default, or the
+    //    "entrypoint" field of a top-level scb-exploit.json in the zip.
     await docker(["cp", `${targetName}:/app/ret2win`, path.join(work, "ret2win")]).catch(() => {});
-    await writeFile(path.join(work, "exploit.py"), Buffer.from(exploitBytes));
+    const bytes = Buffer.from(exploitBytes);
+    const isZip = bytes.length >= 4 && bytes[0] === 0x50 && bytes[1] === 0x4b &&
+      (bytes[2] === 0x03 || bytes[2] === 0x05 || bytes[2] === 0x07);
+
+    let runCmd;
+    if (isZip) {
+      await writeFile(path.join(work, "submission.zip"), bytes);
+      // Unpack, read an optional entrypoint from scb-exploit.json, run it.
+      const script =
+        'set -e; ' +
+        'mkdir -p /work/x && cd /work/x && unzip -o -qq /work/submission.zip; ' +
+        'EP=exploit.py; ' +
+        'if [ -f scb-exploit.json ]; then ' +
+        '  EP=$(python3 -c "import json,sys; print(json.load(open(\\"scb-exploit.json\\")).get(\\"entrypoint\\",\\"exploit.py\\"))"); ' +
+        'fi; ' +
+        'cp -n /work/ret2win ./ret2win 2>/dev/null || true; ' +
+        'exec timeout ' + EXPLOIT_TIMEOUT_S + ' python3 "$EP" target ' + TARGET_PORT;
+      runCmd = ["sh", "-c", script];
+    } else {
+      await writeFile(path.join(work, "exploit.py"), bytes);
+      runCmd = ["timeout", String(EXPLOIT_TIMEOUT_S), "python3", "exploit.py", "target", String(TARGET_PORT)];
+    }
 
     // 6. Run the exploit, isolated, with a hard wall-clock timeout. It reaches
     //    the target as "target:1337".
@@ -117,8 +142,7 @@ export async function judge(exploitBytes, opts = {}) {
         "--memory", "512m", "--cpus", "1", "--pids-limit", "256",
         "-v", `${work}:/work`, "-w", "/work",
         RUNTIME_IMAGE,
-        "timeout", String(EXPLOIT_TIMEOUT_S),
-        "python3", "exploit.py", "target", String(TARGET_PORT),
+        ...runCmd,
       ],
       { timeoutMs: (EXPLOIT_TIMEOUT_S + 15) * 1000 },
     );

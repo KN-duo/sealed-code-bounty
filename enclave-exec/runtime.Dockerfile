@@ -3,7 +3,7 @@
 FROM ubuntu:24.04
 RUN apt-get update \
  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      python3 python3-pip util-linux ca-certificates \
+      python3 python3-pip util-linux unzip ca-certificates \
  && pip install --break-system-packages pwntools \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /work

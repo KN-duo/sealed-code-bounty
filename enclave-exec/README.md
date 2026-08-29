@@ -57,3 +57,25 @@ Single baked target (ret2win); per-bounty targets pulled from a manifest come
 later. The container hardening here is basic (caps, timeout, internal network,
 no external egress) but not the full TEE isolation — that is what the TEE phase
 adds.
+
+
+## The enclave (real verdicts wired to the payout surface)
+
+`enclave.cjs` wraps the judge in the exact `/internal/*` HTTP surface the relayer
+already speaks — but the verdict is real. It unseals the hunter's exploit (only it
+can), runs `judge()`, signs the verdict, and on PASS re-seals the exploit to the
+buyer. The submission may be a single `.py` or a **zip** (unpacked + run inside the
+sandbox; entrypoint `exploit.py` or a `scb-exploit.json` "entrypoint").
+
+Verify the whole thing end to end, no chain needed:
+
+```bash
+bash enclave-exec/build.sh          # once
+node enclave-exec/selftest.cjs      # spawns the enclave, seals a real exploit,
+                                    # uploads it, gets a real Docker verdict,
+                                    # and checks the buyer can decrypt the reveal
+```
+
+Expected: PASS for solve.py, FAIL for solve-broken.py, and the buyer decrypts the
+delivered exploit. Next: point the localnet harness at this enclave so a real PASS
+drives the on-chain escrow payout.
