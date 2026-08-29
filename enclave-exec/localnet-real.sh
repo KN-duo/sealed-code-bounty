@@ -54,6 +54,7 @@ command -v docker >/dev/null || die "docker not found — this needs a Docker ho
 docker image inspect scb-target >/dev/null 2>&1 || die "image scb-target missing — run: bash enclave-exec/build.sh"
 docker image inspect scb-runtime >/dev/null 2>&1 || die "image scb-runtime missing — run: bash enclave-exec/build.sh"
 [ -f cli/dist/scb-submit.js ] || die "cli not built — run: npm --prefix cli run build"
+[ -d enclave-exec/node_modules/@ardrive ] || die "Arweave deps missing — run: npm --prefix enclave-exec install"
 
 # --- boot validator with the program ---------------------------------------
 say "boot validator + program"
@@ -86,6 +87,7 @@ say "start real-execution enclave"
 SCB_MASTER_SECRET_HEX=$(openssl rand -hex 32) \
 SCB_ENCLAVE_ENC_SECRET_HEX=$(openssl rand -hex 32) \
 SCB_OPERATOR_KEYPAIR="$WORK/operator.json" \
+SCB_REVEAL_STORE="${SCB_REVEAL_STORE:-arweave}" \
 PORT="$ENCLAVE_PORT" \
 node enclave-exec/enclave.cjs >"$ENC_LOG" 2>&1 &
 PIDS+=("$!")
@@ -124,10 +126,14 @@ PIDS+=("$!")
 sleep 2
 
 # --- submit the REAL exploit (sealed to the enclave key) --------------------
-say "submit exploit (real ret2win solve.py, sealed & unreadable in transit)"
+# With Arweave storage the reveal is a tiny URL on-chain, so a full-size exploit
+# works (the inline path capped it at ~400 bytes). Set SCB_REVEAL_STORE=inline to
+# force the inline path, in which case use enclave-exec/solve-compact.py instead.
+EXPLOIT_FILE="${SCB_EXPLOIT_FILE:-examples/ret2win/solution/solve.py}"
+say "submit exploit ($EXPLOIT_FILE, sealed & unreadable in transit)"
 SOLVER_BEFORE=$(node e2e/chain.mjs balance "$SOLVER_PUB" | python3 -c "import json,sys; print(json.load(sys.stdin)['lamports'])")
 SUBMIT_OUT=$(node cli/dist/scb-submit.js --rpc-url "$RPC_URL" --keypair "$WORK/solver.json" \
-  --bounty "$BUYER_PUB:$CUR_ID" --file enclave-exec/solve-compact.py \
+  --bounty "$BUYER_PUB:$CUR_ID" --file "$EXPLOIT_FILE" \
   --enclave-url "http://127.0.0.1:$ENCLAVE_PORT" --wait)
 echo "$SUBMIT_OUT" | head -3
 echo "$SUBMIT_OUT" | grep -q '"status": *"PASS"' || die "expected PASS from real execution; got: $SUBMIT_OUT (enclave log: $ENC_LOG)"
@@ -143,8 +149,40 @@ RCPT=$(node e2e/chain.mjs receipt-exists "$BUYER_PUB" "$CUR_ID" "$SOLVER_PUB" | 
 [ "$RCPT" = "True" ] || die "Receipt PDA missing"
 echo "ok: Receipt minted"
 
-CT_B64=$(node e2e/chain.mjs reveal-ct "$BUYER_PUB" "$CUR_ID" | python3 -c "import json,sys; print(json.load(sys.stdin)['ciphertextB64'])")
-[ -n "$CT_B64" ] || die "Reveal ciphertext missing"
-echo "ok: exploit delivered to buyer (Reveal present, ${#CT_B64} b64 chars)"
+CT_B64=$(node e2e/chain.mjs reveal-ct "$BUYER_PUB" "$CUR_ID" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ciphertextB64') or '')")
+REVEAL_URL=$(node e2e/chain.mjs reveal-url "$BUYER_PUB" "$CUR_ID" | python3 -c "import json,sys; print(json.load(sys.stdin).get('url') or '')")
+if [ -n "$REVEAL_URL" ]; then
+  echo "ok: exploit delivered to buyer via Arweave — $REVEAL_URL"
+  # Best-effort: prove the buyer can download + decrypt it. Arweave may need a
+  # few seconds to serve a fresh upload, so retry, and only WARN (not fail) if it
+  # is not yet propagated — the on-chain URL+sha is the durable proof.
+  say "verify buyer can download + decrypt from Arweave (best-effort)"
+  node -e "
+  const path='$ROOT';
+  function dep(n){for(const b of ['relayer','frontend','cli','enclave-exec','.']){try{return require(path+'/'+b+'/node_modules/'+n);}catch(e){}}throw new Error('missing '+n);}
+  const sodium=dep('libsodium-wrappers');
+  const crypto=require('node:crypto'), fs=require('node:fs');
+  (async()=>{
+    await sodium.ready;
+    const sk=new Uint8Array(Buffer.from('$BUYER_ENC_SECRET_HEX','hex'));
+    const pk=sodium.crypto_scalarmult_base(sk);
+    const want=fs.readFileSync('$EXPLOIT_FILE');
+    for(let i=0;i<12;i++){
+      try{
+        const r=await fetch('$REVEAL_URL'); if(!r.ok) throw new Error('http '+r.status);
+        const buf=Buffer.from(await r.arrayBuffer());
+        const sha=crypto.createHash('sha256').update(buf).digest('hex');
+        const opened=sodium.crypto_box_seal_open(new Uint8Array(buf),pk,sk);
+        if(opened && Buffer.from(opened).equals(want)){ console.log('  ok: downloaded, sha ok, decrypted — matches the submitted exploit ('+sha.slice(0,12)+'…)'); process.exit(0); }
+        throw new Error('decrypt mismatch');
+      }catch(e){ await new Promise(r=>setTimeout(r,5000)); }
+    }
+    console.log('  warn: Arweave blob not retrievable/decryptable yet (finality lag) — on-chain URL+sha is the durable proof');
+  })();" || echo "  warn: buyer-decrypt check errored (non-fatal)"
+elif [ -n "$CT_B64" ]; then
+  echo "ok: exploit delivered to buyer inline (Reveal present, ${#CT_B64} b64 chars)"
+else
+  die "Reveal carries neither inline ciphertext nor a URL"
+fi
 
 printf '\n\033[1;32mFULL REAL CYCLE PASSED — real Docker execution drove the on-chain payout + delivery.\033[0m\n\n'

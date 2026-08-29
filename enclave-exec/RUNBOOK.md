@@ -15,6 +15,9 @@ bash enclave-exec/build.sh            # -> scb-target, scb-runtime
 # c. install deps + build the cli
 npm --prefix relayer install
 npm --prefix cli install && npm --prefix cli run build
+
+# d. Arweave (Turbo) storage for the exploit delivery
+npm --prefix enclave-exec install
 ```
 
 ## 1. Confirm your chain environment works (mock)

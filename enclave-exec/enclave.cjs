@@ -55,6 +55,9 @@ const { Keypair } = loadDep("@solana/web3.js");
 
 // --- config ----------------------------------------------------------------
 const PORT = Number(process.env.PORT ?? 8443);
+// Max sealed-reveal size (bytes) to inline in the resolve tx. Beyond this the
+// tx would exceed Solana's 1232-byte limit, so auto mode switches to Arweave.
+const INLINE_MAX = Number(process.env.SCB_INLINE_MAX ?? 350);
 const MASTER = hexToBytes(reqEnv("SCB_MASTER_SECRET_HEX", 64));
 const ENC_SECRET = hexToBytes(reqEnv("SCB_ENCLAVE_ENC_SECRET_HEX", 64));
 
@@ -255,8 +258,24 @@ const server = http.createServer((req, res) => {
         if (outcome) {
           await sodium.ready;
           const buyerPk = new Uint8Array(Buffer.from(st.buyer_enc_pk, "hex"));
-          const sealedToBuyer = sodium.crypto_box_seal(new Uint8Array(rec.exploit), buyerPk);
-          payload.reveal_ciphertext = Buffer.from(sealedToBuyer).toString("base64");
+          const sealed = Buffer.from(sodium.crypto_box_seal(new Uint8Array(rec.exploit), buyerPk));
+
+          // Carrier: inline (in the tx, size-limited) or Arweave URL (off-chain,
+          // permanent, any size). auto = inline for tiny blobs, Arweave otherwise.
+          const store = process.env.SCB_REVEAL_STORE || "auto";
+          const useArweave = store === "arweave" || (store === "auto" && sealed.length > INLINE_MAX);
+          if (useArweave) {
+            const { uploadToArweave } = await import(
+              pathToFileURL(path.join(__dirname, "arweave.mjs")).href
+            );
+            const signer = process.env.SCB_ARWEAVE_SOLANA_KEY || operatorSecret64;
+            const { url, sha256 } = await uploadToArweave(sealed, signer);
+            payload.reveal_ciphertext_url = url;
+            payload.reveal_ciphertext_sha256 = sha256;
+            log("reveal_stored", { bounty: bounty_pda, carrier: "arweave", url });
+          } else {
+            payload.reveal_ciphertext = sealed.toString("base64");
+          }
           // Keep the upload: the relayer may retry verify (e.g. after a transient
           // send failure), and a deleted upload would 404 the retry. A real TTL
           // sweeper reclaims it later.

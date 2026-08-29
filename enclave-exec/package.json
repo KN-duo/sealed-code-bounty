@@ -1,0 +1,11 @@
+{
+  "name": "scb-enclave-exec",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Pre-TEE judging enclave + Arweave (Turbo) reveal storage.",
+  "type": "commonjs",
+  "dependencies": {
+    "@ardrive/turbo-sdk": "^1.23.0",
+    "bs58": "^5.0.0"
+  }
+}

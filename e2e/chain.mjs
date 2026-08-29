@@ -154,6 +154,17 @@ async function revealCtB64(buyerPk, id) {
   return Buffer.from(acc.data.subarray(12, 12 + ctLen)).toString("base64");
 }
 
+// Reveal layout: 8 disc | 4 ctLen | ct | 4 urlLen | url | 32 sha256.
+async function revealUrl(buyerPk, id) {
+  const key = revealPdaPubkey(bountyPdaPubkey(buyerPk, id));
+  const acc = await connection.getAccountInfo(key);
+  if (!acc) return null;
+  const ctLen = acc.data.readUInt32LE(8);
+  const urlOff = 12 + ctLen;
+  const urlLen = acc.data.readUInt32LE(urlOff);
+  return Buffer.from(acc.data.subarray(urlOff + 4, urlOff + 4 + urlLen)).toString("utf8");
+}
+
 // ---------------------------------------------------------------------------
 // CLI dispatch
 // ---------------------------------------------------------------------------
@@ -336,6 +347,11 @@ switch (cmd) {
   case "reveal-ct": {
     const [buyerB58, id] = args;
     console.log(JSON.stringify({ ciphertextB64: await revealCtB64(buyerB58, id) }));
+    break;
+  }
+  case "reveal-url": {
+    const [buyerB58, id] = args;
+    console.log(JSON.stringify({ url: await revealUrl(buyerB58, id) }));
     break;
   }
   default:
