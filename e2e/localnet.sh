@@ -110,7 +110,8 @@ seal_commitment() { # $1 pda_b58, $2 port
 }
 pda_of() {
   node -e "
-const web3=require('$ROOT/node_modules/@solana/web3.js');
+function dep(n){for(const b of ['relayer','frontend','cli','.']){try{return require('$ROOT/'+b+'/node_modules/'+n);}catch(e){}}return require(n);}
+const web3=dep('@solana/web3.js');
 const idBuf=Buffer.alloc(8); idBuf.writeBigUInt64LE(BigInt('$2'));
 const pid=new web3.PublicKey(process.env.PROGRAM_ID);
 const buyer=new web3.PublicKey('$1');
