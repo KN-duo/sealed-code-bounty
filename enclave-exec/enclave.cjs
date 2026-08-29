@@ -257,7 +257,9 @@ const server = http.createServer((req, res) => {
           const buyerPk = new Uint8Array(Buffer.from(st.buyer_enc_pk, "hex"));
           const sealedToBuyer = sodium.crypto_box_seal(new Uint8Array(rec.exploit), buyerPk);
           payload.reveal_ciphertext = Buffer.from(sealedToBuyer).toString("base64");
-          uploads.delete(bounty_pda); // consume on success
+          // Keep the upload: the relayer may retry verify (e.g. after a transient
+          // send failure), and a deleted upload would 404 the retry. A real TTL
+          // sweeper reclaims it later.
         }
         respond(200, payload);
       } catch (e) {

@@ -127,7 +127,7 @@ sleep 2
 say "submit exploit (real ret2win solve.py, sealed & unreadable in transit)"
 SOLVER_BEFORE=$(node e2e/chain.mjs balance "$SOLVER_PUB" | python3 -c "import json,sys; print(json.load(sys.stdin)['lamports'])")
 SUBMIT_OUT=$(node cli/dist/scb-submit.js --rpc-url "$RPC_URL" --keypair "$WORK/solver.json" \
-  --bounty "$BUYER_PUB:$CUR_ID" --file examples/ret2win/solution/solve.py \
+  --bounty "$BUYER_PUB:$CUR_ID" --file enclave-exec/solve-compact.py \
   --enclave-url "http://127.0.0.1:$ENCLAVE_PORT" --wait)
 echo "$SUBMIT_OUT" | head -3
 echo "$SUBMIT_OUT" | grep -q '"status": *"PASS"' || die "expected PASS from real execution; got: $SUBMIT_OUT (enclave log: $ENC_LOG)"
