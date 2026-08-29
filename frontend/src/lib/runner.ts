@@ -69,9 +69,19 @@ export interface UploadRequest {
   submit_intent_sig: string; // base64
   exploit_sealed_box: string; // base64
 }
+// The enclave stores the sealed exploit and returns a receipt. The on-chain
+// blob_url is a separate synthetic reference the caller builds (the enclave
+// locates the upload by bounty + exploit hash, not by this url).
 export interface UploadResponse {
-  blob_url: string;
+  receipt: string;
 }
-export function uploadExploit(req: UploadRequest): Promise<UploadResponse> {
-  return post<UploadResponse>("/internal/upload", req);
+export async function uploadExploit(req: UploadRequest): Promise<UploadResponse> {
+  const res = await post<{ receipt?: string; blob_url?: string }>("/internal/upload", req);
+  const receipt = res.receipt ?? res.blob_url;
+  if (typeof receipt !== "string" || receipt.length === 0) {
+    throw new RunnerError(
+      `The verifier accepted the upload but returned no receipt (got ${JSON.stringify(res).slice(0, 200)}).`,
+    );
+  }
+  return { receipt };
 }

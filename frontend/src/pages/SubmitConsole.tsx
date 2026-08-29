@@ -200,7 +200,7 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
       const sig = await signMessage!(intentMsg);
 
       addLog("uploading to verifier…");
-      const { blob_url } = await uploadExploit({
+      const { receipt } = await uploadExploit({
         bounty_pda: bounty.pda,
         claimed_chain_view: {
           env_blob_sha256: bounty.envBlobSha256,
@@ -212,10 +212,13 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
         submit_intent_sig: toBase64(sig),
         exploit_sealed_box: toBase64(sealed),
       });
-      addLog(`blob url: ${blob_url}`);
+      addLog(`enclave receipt: ${receipt.slice(0, 16)}…`);
 
+      // The on-chain blob_url is a synthetic reference; the enclave already holds
+      // the sealed exploit from the upload, keyed by bounty + exploit hash.
+      const blobUrl = `https://blob.local/${bytesToHex(exploitSha)}`;
       addLog("sending submit_exploit transaction…");
-      const signature = await submit(blob_url, exploitSha);
+      const signature = await submit(blobUrl, exploitSha);
       setTxSig(signature);
       addLog(`tx: ${signature}`);
       addLog("submitted — waiting for the verifier's verdict…");
