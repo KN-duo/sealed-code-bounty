@@ -12,8 +12,21 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, "..");
 const require = createRequire(import.meta.url);
 
-const anchor = require(path.join(REPO_ROOT, "node_modules/@anchor-lang/core"));
-const web3 = require(path.join(REPO_ROOT, "node_modules/@solana/web3.js"));
+// Resolve deps from whichever workspace install has a working copy. The
+// repo-root node_modules can carry a broken @anchor-lang/core (resolves to a
+// 0.0.0 stub with no valid main); relayer/frontend/cli hold clean 1.1.2 copies.
+function resolveDep(name) {
+  for (const base of ["relayer", "frontend", "cli", "."]) {
+    try {
+      return require(path.join(REPO_ROOT, base, "node_modules", name));
+    } catch {
+      /* try next */
+    }
+  }
+  return require(name);
+}
+const anchor = resolveDep("@anchor-lang/core");
+const web3 = resolveDep("@solana/web3.js");
 const SODIUM_PATH = path.join(
   REPO_ROOT,
   "cli/node_modules/libsodium-wrappers/dist/modules/libsodium-wrappers.js"

@@ -104,7 +104,8 @@ BUYER_ENC_PK_HEX=$(node e2e/x25519-pub.mjs "$BUYER_ENC_SECRET_HEX")
 say "create bounty (escrow $PRIZE_LAMPORTS lamports)"
 CUR_ID=101
 PDA_B58=$(node -e "
-const web3=require('$ROOT/node_modules/@solana/web3.js');
+function dep(n){for(const b of ['relayer','frontend','cli','.']){try{return require('$ROOT/'+b+'/node_modules/'+n);}catch(e){}}return require(n);}
+const web3=dep('@solana/web3.js');
 const idBuf=Buffer.alloc(8); idBuf.writeBigUInt64LE(BigInt('$CUR_ID'));
 const pid=new web3.PublicKey('$PROGRAM_ID'); const buyer=new web3.PublicKey('$BUYER_PUB');
 console.log(web3.PublicKey.findProgramAddressSync([Buffer.from('bounty'),buyer.toBuffer(),idBuf],pid)[0].toBase58());")
