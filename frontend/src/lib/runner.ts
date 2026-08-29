@@ -50,8 +50,36 @@ async function post<T>(path: string, body: unknown): Promise<T> {
 export interface SealBountyResponse {
   flag_commitment: string; // hex
 }
-export function sealBounty(bountyPda: string): Promise<SealBountyResponse> {
-  return post<SealBountyResponse>("/internal/seal_bounty", { bounty_pda: bountyPda });
+// The company's target + hunter-facing challenge details, all optional. When a
+// target source is supplied the enclave builds it and judges against it; when a
+// title/description is supplied hunters see it on the bounty page.
+export interface BountyTarget {
+  source_zip_b64?: string; // zip of Dockerfile + files
+  port?: number; // the vulnerable service's TCP port
+  title?: string;
+  description?: string;
+}
+export function sealBounty(bountyPda: string, target?: BountyTarget): Promise<SealBountyResponse> {
+  const body: { bounty_pda: string; target?: BountyTarget } = { bounty_pda: bountyPda };
+  if (target && Object.keys(target).length > 0) body.target = target;
+  return post<SealBountyResponse>("/internal/seal_bounty", body);
+}
+
+// Hunter-facing challenge details (what to hack, how to connect).
+export interface Challenge {
+  title: string;
+  description: string;
+  port: number;
+}
+export async function getChallenge(bountyPda: string): Promise<Challenge | null> {
+  try {
+    const res = await fetch(`${ENCLAVE_URL}/internal/challenge/${encodeURIComponent(bountyPda)}`);
+    if (res.status === 404) return null;
+    if (!res.ok) return null;
+    return (await res.json()) as Challenge;
+  } catch {
+    return null;
+  }
 }
 
 // Hunter step: upload the sealed exploit + intent proof; enclave returns the

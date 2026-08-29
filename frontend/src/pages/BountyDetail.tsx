@@ -1,7 +1,9 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
-import { ArrowLeft, Code2, Crosshair, Download } from "lucide-react";
+import { ArrowLeft, Code2, Crosshair, Download, Target } from "lucide-react";
 import { useBounty } from "../hooks/useData";
+import { getChallenge } from "../lib/runner";
+import type { Challenge } from "../lib/runner";
 import { AsyncView } from "../components/ui/states";
 import { Card, Mono, SolAmount, StatBadge } from "../components/ui/atoms";
 import { HashBadge } from "../components/ui/HashBadge";
@@ -82,6 +84,18 @@ function rawJson(b: Bounty): string {
 export function BountyDetail({ pda }: { pda: string }) {
   const { state, reload } = useBounty(pda);
   const [showRaw, setShowRaw] = useState(false);
+  const [challenge, setChallenge] = useState<Challenge | null>(null);
+
+  // The company's challenge description comes from the verifier (not on-chain).
+  useEffect(() => {
+    let alive = true;
+    getChallenge(pda).then((c) => {
+      if (alive) setChallenge(c);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [pda]);
 
   return (
     <div className="stack" style={{ gap: 20 }}>
@@ -142,6 +156,21 @@ export function BountyDetail({ pda }: { pda: string }) {
                 </div>
               )}
             </Card>
+
+            {challenge && (
+              <Card style={{ padding: 22 }} className="stack">
+                <div className="row" style={{ gap: 10 }}>
+                  <Target size={18} color="var(--accent-green)" />
+                  <h3 style={{ margin: 0 }}>{challenge.title || "The challenge"}</h3>
+                </div>
+                {challenge.description && (
+                  <p style={{ margin: 0, whiteSpace: "pre-wrap" }}>{challenge.description}</p>
+                )}
+                <div className="dim mono" style={{ fontSize: 13 }}>
+                  target service listens on port {challenge.port} · leak <Mono>/flag</Mono> to win
+                </div>
+              </Card>
+            )}
 
             <div className="detail-cols">
               <Card style={{ padding: 22 }}>

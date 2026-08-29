@@ -125,6 +125,7 @@ const flags = new Map();        // pda -> flag string (secret, never leaves)
 const commitments = new Map();  // pda -> commitment hex (public)
 const uploads = new Map();      // pda -> { exploit: Buffer, chain_view, solver_pubkey }
 const targets = new Map();      // pda -> { image, port, copyBinary } for per-bounty targets
+const challenges = new Map();   // pda -> { title, description, port } shown to hunters
 
 // judge() is ESM; load it once.
 let judgeFn = null;
@@ -164,6 +165,12 @@ const server = http.createServer((req, res) => {
   if (req.method === "GET" && req.url === "/internal/healthz") {
     return respond(200, { ok: true, real_execution: true, operator: operatorPubB58 });
   }
+  if (req.method === "GET" && req.url.startsWith("/internal/challenge/")) {
+    const pda = decodeURIComponent(req.url.slice("/internal/challenge/".length));
+    const c = challenges.get(pda);
+    if (!c) return respond(404, { error: "no challenge metadata for this bounty" });
+    return respond(200, c);
+  }
 
   if (req.method === "POST" && req.url === "/internal/seal_bounty") {
     return readBody(async ({ bounty_pda, target }) => {
@@ -198,6 +205,14 @@ const server = http.createServer((req, res) => {
             copyBinary: target.copy_binary === undefined ? null : target.copy_binary,
           });
           log("target_built", { bounty: bounty_pda, tag });
+        }
+        // Hunter-facing challenge description (what to hack, how to connect).
+        if (target && (target.title || target.description)) {
+          challenges.set(bounty_pda, {
+            title: String(target.title ?? "").slice(0, 200),
+            description: String(target.description ?? "").slice(0, 5000),
+            port: Number(target.port) || 1337,
+          });
         }
         respond(200, { flag_commitment: commit });
       } catch (e) {

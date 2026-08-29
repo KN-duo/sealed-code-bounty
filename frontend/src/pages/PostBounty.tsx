@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { Card, Mono } from "../components/ui/atoms";
 import { Button } from "../components/ui/Button";
-import { Field, Input } from "../components/ui/forms";
+import { Field, Input, Textarea } from "../components/ui/forms";
 import { HashBadge } from "../components/ui/HashBadge";
 import { RestoreKey } from "../components/buyer/RestoreKey";
 import { Link } from "../router";
@@ -26,6 +26,7 @@ import { buildManifest, downloadManifest, manifestSha256Hex, validateForm } from
 import type { ManifestForm, TargetKind } from "../lib/manifest";
 import { bountyPda } from "../lib/pda";
 import { sealBounty } from "../lib/runner";
+import type { BountyTarget } from "../lib/runner";
 import { createBounty, txErrorMessage } from "../lib/tx";
 import { useToast } from "../hooks/useToast";
 
@@ -63,6 +64,13 @@ export function PostBounty() {
   const [backedUp, setBackedUp] = useState(false);
 
   const [form, setForm] = useState<ManifestForm>(DEFAULT_FORM);
+  // The company's target program + what hunters see. Optional: without a target
+  // source the enclave uses its demo target.
+  const [targetZipB64, setTargetZipB64] = useState<string | null>(null);
+  const [targetName, setTargetName] = useState<string | null>(null);
+  const [targetPort, setTargetPort] = useState(1337);
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
   const [prizeSol, setPrizeSol] = useState("0.5");
   const [deadlineLocal, setDeadlineLocal] = useState(() => {
     const d = new Date(Date.now() + 7 * 86400_000);
@@ -119,8 +127,16 @@ export function PostBounty() {
       const manifestSha = hexToBytes(manifestSha256Hex(manifest));
       const envBlobSha = hexToBytes(form.imageSha256.trim());
 
-      // 1) enclave seals the environment and returns the flag commitment.
-      const sealed = await sealBounty(bountyAddress);
+      // 1) enclave seals the environment (building the company's target if one
+      //    was uploaded) and returns the flag commitment.
+      const target: BountyTarget = {};
+      if (targetZipB64) {
+        target.source_zip_b64 = targetZipB64;
+        target.port = targetPort;
+      }
+      if (title.trim()) target.title = title.trim();
+      if (description.trim()) target.description = description.trim();
+      const sealed = await sealBounty(bountyAddress, target);
       const flagCommitment = hexToBytes(sealed.flag_commitment);
 
       // 2) fund escrow + pin commitments on-chain.
@@ -249,7 +265,71 @@ export function PostBounty() {
       {/* STEP: MANIFEST -------------------------------------------------- */}
       {step === "manifest" && (
         <Card style={{ padding: 24 }} className="stack">
-          <h3>Target manifest</h3>
+          <h3>Challenge</h3>
+          <p className="dim" style={{ marginTop: 0 }}>
+            What hunters are attacking, and your vulnerable program.
+          </p>
+
+          <Field label="Title" hint="A short name hunters see on the bounty.">
+            <Input
+              value={title}
+              placeholder="ret2win — stack overflow to win()"
+              onChange={(e) => setTitle(e.target.value)}
+            />
+          </Field>
+          <Field label="Description" hint="What to hack, how to connect, any hints.">
+            <Textarea
+              value={description}
+              rows={4}
+              placeholder="A TCP service on the given port reads input into an undersized buffer. Overflow it, redirect execution to win(), and leak /flag."
+              onChange={(e) => setDescription(e.target.value)}
+            />
+          </Field>
+          <div className="two-col">
+            <Field
+              label="Target source (.zip)"
+              hint="A zip of your Dockerfile + files. Serve on a port; keep the secret at root-only /flag. See enclave-exec/example-target."
+            >
+              <input
+                type="file"
+                accept=".zip,application/zip"
+                className="input"
+                onChange={(e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = () => {
+                    const u8 = new Uint8Array(reader.result as ArrayBuffer);
+                    let bin = "";
+                    for (const b of u8) bin += String.fromCharCode(b);
+                    setTargetZipB64(btoa(bin));
+                    setTargetName(file.name);
+                  };
+                  reader.onerror = () => setError(`Could not read ${file.name}.`);
+                  reader.readAsArrayBuffer(file);
+                }}
+              />
+              {targetName && (
+                <div className="dim mono" style={{ fontSize: 13, marginTop: 6 }}>
+                  loaded {targetName}
+                </div>
+              )}
+            </Field>
+            <Field label="Service port" hint="Where your target listens.">
+              <Input
+                type="number"
+                value={targetPort}
+                onChange={(e) => setTargetPort(Number(e.target.value) || 1337)}
+              />
+            </Field>
+          </div>
+          {!targetZipB64 && (
+            <p className="dim" style={{ fontSize: 13, marginTop: -4 }}>
+              No target uploaded → the demo ret2win target is used.
+            </p>
+          )}
+
+          <h3 style={{ marginTop: 8 }}>Environment manifest</h3>
           <p className="dim" style={{ marginTop: 0 }}>
             The environment the verifier boots and the rules it runs under (schema v2).
           </p>
