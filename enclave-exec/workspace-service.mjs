@@ -60,7 +60,10 @@ async function startWorkspace(bountyPda) {
   };
 
   try {
-    let r = await docker(["network", "create", "--internal", net]);
+    // NOT --internal: an internal network cannot publish ports to the host, and
+    // the practice shell needs its ttyd port reachable. (The JUDGE stays internal
+    // — it must not phone home; the practice env trades that for a live terminal.)
+    let r = await docker(["network", "create", net]);
     if (r.code !== 0) throw new Error(`network: ${r.stderr.trim()}`);
 
     // Target, reachable as "target".
