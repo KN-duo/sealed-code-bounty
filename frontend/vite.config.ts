@@ -27,11 +27,17 @@ export default defineConfig({
         target: ENCLAVE_TARGET,
         changeOrigin: true,
         rewrite: (path) => path.replace(new RegExp(`^${ENCLAVE_PREFIX}`), ""),
+        // seal_bounty builds the company's target (git clone + docker build),
+        // which can take minutes — don't let the proxy 502 before it finishes.
+        timeout: 600000,
+        proxyTimeout: 600000,
       },
       [WORKSPACE_PREFIX]: {
         target: WORKSPACE_TARGET,
         changeOrigin: true,
         rewrite: (path) => path.replace(new RegExp(`^${WORKSPACE_PREFIX}`), ""),
+        timeout: 120000,
+        proxyTimeout: 120000,
       },
     },
   },
