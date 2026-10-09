@@ -6,7 +6,9 @@ volume. The current draft creates only a launch template; it does not create an
 EC2 instance. A separately invoked session terminates after one hour and
 deletes its root volume. Only the KMS key and stored S3 objects remain between
 sessions. Terraform validation and a refreshed read-only plan passed (21
-additions, no EC2 instance, configured runtime one hour). Full cost and launch
+additions, no EC2 instance, configured runtime one hour) on 2026-10-09. That
+plan was not applied. On the current machine Terraform and AWS CLI are absent;
+no AWS resources, EIF, or public API have been deployed. Full cost and launch
 review remain required before resources are created.
 
 This Terraform configuration prepares a launch template for one bounded
@@ -55,6 +57,16 @@ The script pins the numeric template version recorded in Terraform state.
 The budget filters for the `Project=sealed-code-bounty` cost-allocation tag.
 Activate that user-defined tag in AWS Billing and Cost Management before
 relying on the budget notifications.
+
+## Current deployment boundary
+
+This directory is infrastructure source, not an available service. The
+configured PCR0 is deliberately a deny-all placeholder because no production
+EIF measurement exists. The plan and credentials are not included in this
+repository. Do not apply a saved plan or launch a session until the trust-boundary,
+cost, and external-approval gates in [`../../DEPLOYMENT-HANDOFF.md`](../../DEPLOYMENT-HANDOFF.md)
+are closed. Static frontend hosting is a separate step and cannot replace the
+missing authenticated API/reverse proxy.
 
 ## Review commands
 

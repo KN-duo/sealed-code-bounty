@@ -1,9 +1,15 @@
 # scb-runner
 
-Verifier runner skeleton (`docs/BUILD_PLAN_v2.md` §4.3) — the trust core of
-SealedCodeBounty. Intended to run inside an AWS Nitro Enclave; the binary
-binds `127.0.0.1:$PORT` (default 8443) and only ever talks to the parent via
-the four `/internal/*` endpoints.
+Rust verifier service (`docs/BUILD_PLAN_v2.md` §4.3), intended to run inside an
+AWS Nitro Enclave. It binds `127.0.0.1:$PORT` (default 8443) and is currently
+run only in local development/tests. No EIF, attestation/KMS key release, or
+public authenticated ingress is implemented, so this is not a production TEE.
+
+**Do not use real submissions or production secrets here.** The environment
+secret variables below are development-only inputs; production must derive
+keys from an attestation-gated KMS release instead. The default sandbox is a
+typed stub that returns HTTP 501. Docker is opt-in and has not had a real
+PASS/FAIL run on the current machine.
 
 ## Run
 
@@ -22,23 +28,24 @@ material, they never leave the process.
 | `GET /internal/healthz` | liveness |
 | `POST /internal/seal_bounty {bounty_pda}` | → `{flag_commitment}` (deterministic across restarts) |
 | `POST /internal/upload {bounty_pda, claimed_chain_view{env_blob_sha256,buyer_enc_pk,flag_commitment,exploit_sha256}, solver_pubkey, submit_intent_sig, exploit_sealed_box}` | → `{receipt}` |
-| `POST /internal/verify {bounty_pda, solver_pubkey, submission_receipt, claimed_chain_view}` | verdict JSON mirroring `relayer/src/enclave-types.ts` |
+| `POST /internal/verify {bounty_pda, solver_pubkey, submission_receipt, manifest_sha256, claimed_chain_view}` | verdict JSON mirroring `relayer/src/enclave-types.ts` |
 
 ## REAL vs STUB
 
 | Piece | Status |
 |---|---|
 | Flag derivation `base58(HKDF-SHA256(M, salt=pda, info="scb-flag-v1"))` | **REAL** + golden vector (`tests/golden/verdict_v3.json`) |
-| Stable verdict key `HKDF(M, info="scb-verdict-key-v1")` (D14) | **REAL**, ed25519-dalek |
+| Stable verdict key `HKDF(M, info="scb-verdict-key-v1")` (D14) | **REAL in the local runner**, ed25519-dalek; the master key is not yet released through Nitro/KMS |
 | Intent-signature gate `SCB_SUBMIT_V1‖pda‖sha256(plaintext)` — 403 before any heavy work | **REAL** |
 | Sealed-box unseal/seal (libsodium-compatible, `crypto_box` crate) | **REAL** (hunter→enclave on upload; enclave→buyer reveal on PASS) |
 | Public execution log | **REAL**, fixed PASS/FAIL text only; process output is never returned |
 | Safe rootfs unpack: total-size cap (2 GiB default), file-count cap (10k), traversal/symlink/hardlink rejection | **REAL**, attack-fixture tested |
+| Safe exploit ZIP: 9 KB compressed / 2 MiB expanded, 128-file and 240-byte path caps; traversal and links rejected; Python argv allowlist; plaintext workspace zeroized best-effort, removed, and mounted read-only | **REAL**, adversarially tested |
 | Rate limiting: per-wallet AND per-IP token buckets (5/hr default) | **REAL** |
 | Immutable encrypted submission store with SHA-256 receipt, aggregate cap, and restart recovery | **REAL** locally via development directory; production uses the vsock helper and parent S3 broker |
 | Chain-view divergence check → HTTP 409, never guesses | **REAL** |
-| Verdict signing over exact 175-byte `SCB_VERDICT_V3` wire | **REAL**, golden-tested |
-| Sandbox execution (`SandboxExecutor`) | **STUB by default**: `StubSandbox` answers typed `Unsupported` → HTTP 501. `DockerCli` impl composes `docker run` arg-arrays (network/memory/cpus/SEED env, work-dir mount) but is not yet wired to blob pulling or a live target container. |
+| Verdict signing over exact 239-byte `SCB_VERDICT_V5` wire, including the on-chain manifest hash | **REAL locally**, golden-tested in `../test-vectors/verdict_v5.json`; this does not attest the signer |
+| Sandbox execution (`SandboxExecutor`) | **STUB by default**: `StubSandbox` answers typed `Unsupported` → HTTP 501. `SCB_SANDBOX=docker` selects `DockerCli`, which loads the verified target tarball or target image and runs it with the configured runtime image. The argument-array path is Docker-shim tested; a real Docker-backed PASS/FAIL run remains unverified in this workspace. |
 
 ## Threat-model notes (maps to BUILD_PLAN §8 checklist)
 
@@ -65,3 +72,8 @@ material, they never leave the process.
 cargo test        # unit, HTTP integration, blob and Docker-shim suites
 cargo clippy --all-targets   # zero warnings expected
 ```
+
+Latest recorded local result (2026-10-09): 72 tests passed and Clippy passed
+with warnings denied. Docker-backed execution, Nitro boot, AF_VSOCK integration,
+attestation, KMS release, and deployed API routing remain open; see
+[`../DEPLOYMENT-HANDOFF.md`](../DEPLOYMENT-HANDOFF.md).

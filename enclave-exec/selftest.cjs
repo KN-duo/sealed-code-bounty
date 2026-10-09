@@ -4,8 +4,9 @@
 // one: seals it to the enclave's key (as a hunter would), uploads it, asks for a
 // verdict, and checks the enclave actually ran it in Docker and judged correctly.
 //
-// Proves the keystone: only the enclave can read the exploit, and the verdict
-// comes from real execution — not a mock.
+// Legacy local Docker prototype test: the host process reads a development key,
+// unseals an exploit, executes it in Docker, and checks its local verdict.
+// This does not prove Nitro isolation, attestation, or production key custody.
 //
 // Run on a Docker host, after building images:
 //   bash enclave-exec/build.sh
@@ -73,7 +74,7 @@ async function runCase(label, exploitBytes, buyer, expectPass, target) {
   if (seal.status !== 200) throw new Error(`seal_bounty failed: ${JSON.stringify(seal.json)}`);
   const commitment = seal.json.flag_commitment;
 
-  // Seal the exploit to the enclave's public key — only the enclave can open it.
+  // Seal to this process's test key; this is not enclave/attestation proof.
   const encPk = new Uint8Array(Buffer.from((await jget("/internal/enclave-pubkey")).json.enclave_enc_pk, "hex"));
   const sealedBox = Buffer.from(sodium.crypto_box_seal(new Uint8Array(exploitBytes), encPk)).toString("base64");
   const exploitSha = crypto.createHash("sha256").update(exploitBytes).digest("hex");
@@ -114,6 +115,12 @@ async function runCase(label, exploitBytes, buyer, expectPass, target) {
   return ok;
 }
 
+function zipExploit(scriptBytes) {
+  const source =
+    "import sys,zipfile; z=zipfile.ZipFile(sys.stdout.buffer,'w',zipfile.ZIP_DEFLATED); z.writestr('exploit.py',sys.stdin.buffer.read()); z.close()";
+  return execFileSync("python3", ["-c", source], { input: scriptBytes, maxBuffer: 1024 * 1024 });
+}
+
 (async () => {
   await sodium.ready;
   const buyer = sodium.crypto_box_keypair();
@@ -138,11 +145,11 @@ async function runCase(label, exploitBytes, buyer, expectPass, target) {
   let failures = 0;
   try {
     await waitUp();
-    console.log("\n  real-execution enclave up; running cases\n");
-    const solve = readFileSync(path.join(REPO, "examples/ret2win/solution/solve.py"));
-    const broken = readFileSync(path.join(REPO, "examples/ret2win/solution/solve-broken.py"));
-    if (!(await runCase("PASS (solve.py)", solve, buyer, true))) failures++;
-    if (!(await runCase("FAIL (solve-broken.py)", broken, buyer, false))) failures++;
+    console.log("\n  legacy local verifier process up; running Docker cases\n");
+    const solve = zipExploit(readFileSync(path.join(REPO, "examples/ret2win/solution/solve.py")));
+    const broken = zipExploit(readFileSync(path.join(REPO, "examples/ret2win/solution/solve-broken.py")));
+    if (!(await runCase("PASS (ZIP containing solve.py)", solve, buyer, true))) failures++;
+    if (!(await runCase("FAIL (ZIP containing solve-broken.py)", broken, buyer, false))) failures++;
 
     // Per-bounty target: build the example-target from source and judge against
     // it (proves a company can upload their own program, not the baked one).

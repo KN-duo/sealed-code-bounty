@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { PublicKey } from "@solana/web3.js";
@@ -17,7 +17,7 @@ import {
 import { AsyncView } from "../components/ui/states";
 import { Card, Mono, SolAmount } from "../components/ui/atoms";
 import { Button } from "../components/ui/Button";
-import { FileDrop, Field, Textarea } from "../components/ui/forms";
+import { BinaryFileDrop, Field } from "../components/ui/forms";
 import { HashBadge } from "../components/ui/HashBadge";
 import { Link } from "../router";
 import { useBounty, useConfig } from "../hooks/useData";
@@ -39,10 +39,8 @@ import type { Bounty, ProtocolConfig } from "../lib/types";
 type Phase = "compose" | "working" | "watching" | "timeout" | "pass" | "fail";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-// The reveal is sealed inline on-chain and the program caps it at 9,700 bytes,
-// so anything larger fails late and confusingly at resolve time. Enforced both
-// at file-pick time (FileDrop maxBytes) and on the submit path itself, since a
-// paste can bypass the picker.
+// The reveal is sealed inline on-chain and the program caps it at 9,700 bytes.
+// Keep room for sealed-box overhead and ZIP metadata.
 const MAX_EXPLOIT_BYTES = 9000;
 
 export function SubmitConsole({ pda }: { pda: string }) {
@@ -110,7 +108,7 @@ interface ConsoleProps {
 
 function Console({ bounty, config, solver, signMessage, submit, toast }: ConsoleProps) {
   const [phase, setPhase] = useState<Phase>("compose");
-  const [source, setSource] = useState("");
+  const [exploitZip, setExploitZip] = useState<Uint8Array | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [log, setLog] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -137,12 +135,7 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
   const notOpen = bounty.status !== "open";
   const canSign = typeof signMessage === "function";
 
-  // Byte length of the exploit after TextEncoder encoding — string .length
-  // undercounts multi-byte characters, and the on-chain cap is in bytes.
-  const exploitByteLength = useMemo(
-    () => new TextEncoder().encode(source).length,
-    [source],
-  );
+  const exploitByteLength = exploitZip?.length ?? 0;
 
   // Poll on-chain status after submission until a terminal verdict.
   useEffect(() => {
@@ -190,11 +183,11 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
       setError("This wallet cannot sign messages, which is required for the intent proof.");
       return;
     }
-    if (source.trim().length === 0) {
-      setError("Load or paste an exploit first.");
+    if (!exploitZip || exploitZip.length === 0) {
+      setError("Load an exploit ZIP first.");
       return;
     }
-    const exploit = new TextEncoder().encode(source);
+    const exploit = exploitZip;
     if (exploit.length > MAX_EXPLOIT_BYTES) {
       setError(
         `Exploit is ${exploit.length.toLocaleString()} bytes — over the ${MAX_EXPLOIT_BYTES.toLocaleString()} byte limit for inline reveals.`,
@@ -396,35 +389,31 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
         </Card>
         <Field
           label="Exploit"
-          hint="Drop or paste your exploit. It's sealed to the enclave key locally — the plaintext never leaves your browser unencrypted."
+          hint="Upload a ZIP containing exploit.py (and optional helper files). It's sealed to the enclave key locally — the archive never leaves your browser unencrypted."
         >
-          <FileDrop
-            accept=".py,.txt,.sh,text/*"
-            label="Drop exploit.py or click to browse"
+          <BinaryFileDrop
+            accept=".zip,application/zip"
+            label="Drop an exploit ZIP or click to browse"
             loadedName={fileName}
             maxBytes={MAX_EXPLOIT_BYTES}
             onFile={(name, contents) => {
               setFileName(name);
-              setSource(contents);
+              setExploitZip(contents);
+              setError(null);
             }}
-            onError={(message) => setError(message)}
+            onError={(message) => {
+              setExploitZip(null);
+              setFileName(null);
+              setError(message);
+            }}
           />
         </Field>
-        <Textarea
-          value={source}
-          placeholder="# or paste your exploit here"
-          rows={10}
-          onChange={(e) => {
-            setSource(e.target.value);
-            setFileName(null);
-          }}
-        />
         {exploitByteLength > MAX_EXPLOIT_BYTES && (
           <div className="row" style={{ color: "var(--accent-red)", gap: 6 }}>
             <AlertCircle size={14} />
             <span>
-              Exploit is {exploitByteLength.toLocaleString()} bytes — over the{" "}
-              {MAX_EXPLOIT_BYTES.toLocaleString()} byte limit for inline reveals.
+              ZIP is {exploitByteLength.toLocaleString()} bytes — over the{" "}
+              {MAX_EXPLOIT_BYTES.toLocaleString()} byte limit for sealed submissions.
             </span>
           </div>
         )}

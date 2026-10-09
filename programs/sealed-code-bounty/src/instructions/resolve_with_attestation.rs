@@ -12,7 +12,7 @@ use crate::{
 // PERMISSIONLESS resolution (docs/BUILD_PLAN_v2.md §4.1). Anyone may land an
 // enclave-signed verdict; trust comes from cryptography, not identity:
 //
-//   1. The handler RECOMPUTES the canonical `SCB_VERDICT_V4` message bytes
+//   1. The handler RECOMPUTES the canonical `SCB_VERDICT_V5` message bytes
 //      from its own accounts/args — never from anything the relayer supplies.
 //   2. Every native Ed25519SigVerify instruction placed EARLIER in this same
 //      transaction is parsed and its embedded message must equal the
@@ -74,9 +74,9 @@ pub struct ResolveWithAttestation<'info> {
 // Pure helpers — unit-tested below without localnet.
 // ===========================================================================
 
-/// Canonical `SCB_VERDICT_V4` wire. MUST stay byte-identical to:
+/// Canonical `SCB_VERDICT_V5` wire. MUST stay byte-identical to:
 ///   constants.rs · relayer/src/verdict.ts · runner/src/verdict.rs
-/// Cross-language fixture: test-vectors/verdict_v4.json at the repo root.
+/// Cross-language fixture: test-vectors/verdict_v5.json at the repo root.
 pub fn recompute_verdict_msg(
     bounty_key: &Pubkey,
     bounty: &Bounty,
@@ -86,6 +86,8 @@ pub fn recompute_verdict_msg(
     let mut msg = Vec::with_capacity(VERDICT_MSG_LEN);
     msg.extend_from_slice(VERDICT_DOMAIN_TAG);
     msg.extend_from_slice(bounty_key.as_ref());
+    // V5 binds the exact manifest whose execution contract the enclave checked.
+    msg.extend_from_slice(&bounty.manifest_sha256);
     // V3: bind the environment this verdict was produced against — closes the
     // fake-weak-environment hole (colluding relayer + unbound verdict).
     msg.extend_from_slice(&bounty.env_blob_sha256);
@@ -269,7 +271,7 @@ pub fn validate_reveal_payload(
     receipt_present: bool,
     reveal_present: bool,
     outcome: bool,
-    mut ciphertext: Vec<u8>,
+    ciphertext: Vec<u8>,
     url: String,
     sha256: [u8; 32],
 ) -> Result<Option<RevealData>> {
@@ -511,14 +513,15 @@ mod tests {
         let msg = recompute_verdict_msg(&key, &bounty, bounty.current_submission.as_ref().unwrap(), true);
 
         assert_eq!(msg.len(), VERDICT_MSG_LEN);
-        assert_eq!(&msg[0..14], b"SCB_VERDICT_V4");
+        assert_eq!(&msg[0..14], b"SCB_VERDICT_V5");
         assert_eq!(&msg[14..46], &[9u8; 32]); // pda
-        assert_eq!(&msg[46..78], &[3u8; 32]); // env
-        assert_eq!(&msg[78..110], &[7u8; 32]); // exploit
-        assert_eq!(&msg[110..142], &[6u8; 32]); // solver
-        assert_eq!(&msg[142..174], &[4u8; 32]); // flag commitment
-        assert_eq!(&msg[174..206], &[5u8; 32]); // buyer enc pk (V4)
-        assert_eq!(msg[206], 1);
+        assert_eq!(&msg[46..78], &[2u8; 32]); // manifest
+        assert_eq!(&msg[78..110], &[3u8; 32]); // env
+        assert_eq!(&msg[110..142], &[7u8; 32]); // exploit
+        assert_eq!(&msg[142..174], &[6u8; 32]); // solver
+        assert_eq!(&msg[174..206], &[4u8; 32]); // flag commitment
+        assert_eq!(&msg[206..238], &[5u8; 32]); // buyer enc pk
+        assert_eq!(msg[238], 1);
     }
 
     #[test]
@@ -568,6 +571,7 @@ mod quorum_and_payload_tests {
         let mut m = Vec::new();
         m.extend_from_slice(VERDICT_DOMAIN_TAG);
         m.extend_from_slice(&[9u8; 32]);
+        m.extend_from_slice(&[1u8; 32]);
         m.extend_from_slice(&[2u8; 32]);
         m.extend_from_slice(&[3u8; 32]);
         m.extend_from_slice(&[6u8; 32]);

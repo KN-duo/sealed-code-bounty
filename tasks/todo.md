@@ -56,15 +56,19 @@ No AWS resources were needed for this implementation.
   verify manifest/tarball hashes inside the enclave before sandbox use.
 - [x] Add adversarial tests for schema changes, mismatches, size limits,
   invalid ranges, cancellation, and parent-selected paths/commands.
-- [ ] Bind the manifest hash into the on-chain verified verdict (current V4
-  signature binds the environment hash but not manifest-controlled commands),
-  or provide independently authenticated chain state inside the enclave.
+- [x] Bind the on-chain manifest hash into the verified verdict (SCB_VERDICT_V5);
+  the program recomputes it from the Bounty account and rejects a signature over
+  a different manifest.
+- [x] Replace bare-script submissions with bounded ZIP archives in the browser,
+  CLI, and runner; validate extraction and entrypoints, reject links/traversal,
+  and clean up the plaintext workspace on every path.
 - [ ] Implement environment packaging/publication through the browser. ZIP/Git
   source publishing is blocked instead of committing a fake environment hash.
 
 ## Final deployment program (authorized 2026-10-06)
 
-- [~] Step 1: production execution path complete and adversarially tested.
+- [~] Step 1: local implementation/adversarial tests mostly complete; current
+  Docker-backed V5 execution and local settlement proof remain open.
 - [ ] Step 2: Nitro trust boundary, attestation, KMS release, and EIF complete.
 - [~] Step 3: redesigned Terraform validated and read-only plan refreshed;
   cost review, independent termination backstop, and actual launch remain open.
@@ -79,8 +83,8 @@ as complete without the user's specific approval or the actual third-party work.
 ## 1. Close the pre-TEE execution seams
 
 - [ ] Prove real Docker-backed PASS and FAIL locally (no mock verdict rule).
-- [ ] Unify the frontend, runner, and relayer upload response contract.
-- [ ] Make the relayer fetch and hash-check each bounty target/manifest.
+- [x] Unify the frontend, runner, and relayer upload response contract.
+- [x] Make the relayer fetch and hash-check each bounty target/manifest.
 - [ ] Run browser submission -> real execution -> localnet settlement twice.
 - [x] Exercise timeout, FAIL, cleanup, and force-unlock paths.
 
@@ -132,10 +136,19 @@ as complete without the user's specific approval or the actual third-party work.
   and target overrides, fetches fixed S3 keys in bounded chunks, hashes the
   complete files, then applies verified manifest limits. Binary stdio targets
   return explicit 501 until implemented. These are local tests, not Nitro proof.
-- Found a remaining trust-boundary issue: the existing V4 verdict does not
-  bind manifest_sha256. A malicious parent could supply another manifest with
-  the same environment hash. Keep production blocked until the signature
-  contract or independently verified chain state closes this seam.
+- Closed the manifest substitution seam with SCB_VERDICT_V5. The 239-byte
+  signed wire includes `manifest_sha256`; the program derives it from its Bounty
+  account, and the runner signs the hash it fetched and verified. Added a
+  negative Anchor case for a different manifest. Verified 2026-10-09:
+  `cargo test --locked` (72 passed after ZIP coverage),
+  `cargo clippy --locked --all-targets -- -D warnings`, relayer `npm test` (12
+  passed), `anchor test --skip-build
+  --validator legacy` (29 passed), and `anchor build --ignore-keys` succeeded.
+  These local checks do not prove Nitro attestation, AWS storage, or enclave
+  confidentiality. Rust exploit-ZIP adversarial tests and frontend/CLI ZIP
+  contracts are also covered locally. Real Docker-backed ZIP execution and the
+  V5 local Docker settlement cycles remain to be rerun; Docker is not installed
+  in the current workspace.
 - Session lifecycle corrections: actual and example tfvars were still four
   hours despite the one-hour default; both now specify one. Start pins the
   numeric launch-template version. Destroy terminates and waits for parents
@@ -265,17 +278,52 @@ as complete without the user's specific approval or the actual third-party work.
 - [x] Make uploaded Dockerfile builds opt-in and remove arbitrary URL fetching.
 - [x] Enforce an explicit request-body limit in the local execution prototype.
 - [x] Record the current worktree baseline and preserve unrelated changes.
-- [ ] Build the real judge images and prove standalone PASS/FAIL execution.
-- [ ] Close and test the upload, target-fetch, manifest, and settlement seams.
-- [ ] Exercise timeout, cleanup, resubmission, and force-unlock locally.
-- [ ] Implement and test the vsock-only enclave/parent protocol and sandbox.
-- [ ] Add deterministic EIF build/measurement tooling and AWS Terraform.
-- [ ] Run formatting, validation, unit, integration, and local end-to-end gates.
-- [ ] Document exact staging cost, security assumptions, deployment, and teardown.
+## Historical initial checklist (superseded)
+
+The unchecked list below is from the original pre-TEE planning snapshot. It is
+not the current task list; several items are now complete locally. Use
+[`DEPLOYMENT-HANDOFF.md`](../DEPLOYMENT-HANDOFF.md) and the status sections above
+for current remaining work.
+
+- [ ] Original checklist: build/prove judge, close pipeline seams, exercise
+  failure paths, implement vsock/EIF/IaC, rerun gates, document deployment.
 
 Current baseline: AWS supports Nitro-capable `m6i.xlarge` and KMS in
 `eu-north-1`; no billable AWS resources have been created. Existing modified
 frontend, localnet, Anchor, and program files are user work and must be
-preserved. The user requests public hosting and AWS execution within $2/month;
-the old retained-resource plan exceeds that constraint and must be replaced
-before launch. The runtime and confidentiality gates remain open.
+preserved. The current machine lacks Docker, Nitro CLI, Terraform, AWS CLI, and
+website deploy credentials; no website, AWS service, or chain program is live.
+The runtime and confidentiality gates remain open.
+
+- Deployment continuation 2026-10-09: updated root/component READMEs and
+  handoff notes to separate implemented local behavior from live deployment
+  guarantees. Confirmed the existing `enclave-exec` PASS/FAIL scripts run a
+  legacy JavaScript process with environment-held test keys, not the Rust V5
+  runner or Nitro; relabeled them accordingly. No external deployment or
+  resource creation was performed.
+- Fresh local verification: `cargo test --locked` (72 passed),
+  `cargo clippy --locked --all-targets -- -D warnings`, relayer `npm test` (12),
+  CLI `npm test` (12), frontend `npm run lint` and `npm run build`, and
+  `anchor test --skip-build --validator legacy` (29) passed. Nitro protocol (3),
+  submission-store (22), and artifact-store (15) Python tests passed using
+  local-only socket permission. `node --check enclave-exec/selftest.cjs`,
+  `bash -n enclave-exec/localnet-real.sh`, and `git diff --check` passed.
+- Docker-backed Rust execution was skipped because Docker is absent. Nitro EIF,
+  AWS/S3/KMS, public website/API, devnet, and mainnet deployment were not run.
+  The current static frontend cannot work as a CTF service without an
+  authenticated `/enclave` reverse proxy, explicit live cluster/program/RPC
+  settings, and an attested verifier key.
+- Final Anchor recheck after removing two harmless compiler warnings:
+  `anchor build --ignore-keys` completed with no compiler warnings and
+  `anchor test --skip-build --validator legacy` passed all 29 tests.
+- Added a frontend production deploy preflight and Node tests. `npm run
+  test:deploy` passed; `npm run build:deploy` correctly stopped because no
+  explicit production cluster, deployed program ID, HTTPS RPC, or verifier
+  endpoint is configured. The regular local `npm run build` remains available.
+  Updated Pages instructions to use `npm ci && npm run build:deploy`; this is a
+  configuration-shape check only and does not establish that the services are
+  reachable or attested.
+- Rechecked the preflight's valid-config path with placeholder devnet settings;
+  lint and ordinary frontend build also pass. Vite still reports its existing
+  browser crypto/stream externalization and large-bundle warnings. No live
+  endpoint was contacted and no deployment was performed.

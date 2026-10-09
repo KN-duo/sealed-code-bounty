@@ -181,6 +181,7 @@ export function reconstructMessage(job: Job, bounty: BountyView, outcome: boolea
   const sub = bounty.currentSubmission!;
   return buildVerdictMessage({
     bountyPda: job.bountyPda.toBuffer(),
+    manifestSha256: Buffer.from(bounty.manifestSha256),
     envBlobSha256: Buffer.from(bounty.envBlobSha256),
     exploitSha256: Buffer.from(sub.exploitSha256),
     solver: sub.solver.toBuffer(),
@@ -208,7 +209,7 @@ export function prepareVerdict(
   const message = reconstructMessage(job, bounty, resp.outcome);
   if (!verifyDetached(message, resp.sig, operatorPubkey)) {
     throw new PermanentError(
-      "enclave signature failed LOCAL verification over reconstructed SCB_VERDICT_V4 bytes"
+      "enclave signature failed LOCAL verification over reconstructed SCB_VERDICT_V5 bytes"
     );
   }
   const ciphertext =

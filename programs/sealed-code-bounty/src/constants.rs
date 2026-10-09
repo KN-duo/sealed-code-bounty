@@ -45,20 +45,20 @@ pub const INSTRUCTIONS_SYSVAR_ID: Pubkey =
     pubkey!("Sysvar1nstructions1111111111111111111111111");
 
 /// Domain tag signed by the enclave in front of every verdict
-/// (`SCB_VERDICT_V4`, 14 bytes — domain separation + format version).
+/// (`SCB_VERDICT_V5`, 14 bytes — domain separation + format version).
 ///
 /// INVARIANT (audit L4): verdicts are pure functions of the bound inputs
 /// below. NEVER rotate the master secret `M` or an environment blob for a
 /// LIVE bounty — doing so would make previously-signed verdicts replayable
 /// against the mutated state.
-pub const VERDICT_DOMAIN_TAG: &[u8] = b"SCB_VERDICT_V4";
+pub const VERDICT_DOMAIN_TAG: &[u8] = b"SCB_VERDICT_V5";
 
 /// Canonical verdict wire length:
-/// 14 B tag || 32 B bounty_pda || 32 B env_blob_sha256 || 32 B exploit_sha256
-/// || 32 B solver || 32 B flag_commitment || 32 B buyer_enc_pk || 1 B outcome.
+/// 14 B tag || 32 B bounty_pda || 32 B manifest_sha256 || 32 B env_blob_sha256
+/// || 32 B exploit_sha256 || 32 B solver || 32 B flag_commitment
+/// || 32 B buyer_enc_pk || 1 B outcome.
 ///
 /// V3 bound `env_blob_sha256` (fake-weak-environment hole).
-/// V4 binds `buyer_enc_pk`: without it a colluding relayer+solver could
-/// redirect the PASS reveal ciphertext to an attacker X25519 key and the
-/// buyer would receive an unopenable box, silently.
-pub const VERDICT_MSG_LEN: usize = 207;
+/// V4 bound `buyer_enc_pk`; V5 binds `manifest_sha256` so a parent cannot
+/// substitute manifest-controlled execution commands and still settle.
+pub const VERDICT_MSG_LEN: usize = 239;

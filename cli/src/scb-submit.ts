@@ -25,6 +25,7 @@ import {
   parseUploadResponse,
   submissionReference,
   DEFAULT_PROGRAM_ID,
+  validateExploitZip,
 } from "./submit-lib";
 
 function createSha256Hex(data: Uint8Array): string {
@@ -55,6 +56,7 @@ async function run(o: Opts): Promise<void> {
   const buyerPk = new PublicKey(buyerStr);
   const bountyId = BigInt(idStr);
   const exploitBytes = fs.readFileSync(o.file);
+  validateExploitZip(exploitBytes);
   const hunter = Keypair.fromSecretKey(
     Uint8Array.from(JSON.parse(fs.readFileSync(o.keypair, "utf8")))
   );
@@ -224,7 +226,7 @@ program
   .requiredOption("--rpc-url <url>", "Solana RPC endpoint")
   .requiredOption("--keypair <path>", "hunter wallet keypair JSON (solana-keygen format)")
   .requiredOption("--bounty <buyer:bounty_id>", "bounty identity as buyer_pubkey:numeric_id")
-  .requiredOption("--file <path>", "exploit script (python3 + pwntools)")
+  .requiredOption("--file <path>", "exploit ZIP archive (up to 9000 bytes)")
   .option("--enclave-url <url>", "verifier enclave base URL (required unless --dry-run)")
   .option("--program-id <pubkey>", "program id", DEFAULT_PROGRAM_ID)
   .option("--wait", "poll until the bounty leaves AwaitingResolution")

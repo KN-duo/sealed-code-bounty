@@ -134,3 +134,120 @@ export function FileDrop({
     </div>
   );
 }
+
+// Binary counterpart used for sealed ZIP submissions. The client checks the
+// signature and byte cap for fast feedback; the runner remains authoritative.
+export function BinaryFileDrop({
+  accept,
+  label = "Drop a file here or click to browse",
+  loadedName,
+  maxBytes,
+  onFile,
+  onError,
+}: {
+  accept?: string;
+  label?: string;
+  loadedName?: string | null;
+  maxBytes?: number;
+  onFile: (name: string, contents: Uint8Array) => void;
+  onError?: (message: string) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [dragging, setDragging] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  function report(message: string) {
+    setLocalError(message);
+    onError?.(message);
+  }
+
+  function read(file: File) {
+    setLocalError(null);
+    if (maxBytes != null && file.size > maxBytes) {
+      report(
+        `"${file.name}" is ${file.size.toLocaleString()} bytes — larger than the ${maxBytes.toLocaleString()} byte limit.`,
+      );
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const contents = new Uint8Array(reader.result as ArrayBuffer);
+      const isZip =
+        contents.length >= 4 &&
+        contents[0] === 0x50 &&
+        contents[1] === 0x4b &&
+        ((contents[2] === 0x03 && contents[3] === 0x04) ||
+          (contents[2] === 0x05 && contents[3] === 0x06) ||
+          (contents[2] === 0x07 && contents[3] === 0x08));
+      if (!isZip) {
+        report("Choose a ZIP archive (the file must have a ZIP signature).");
+        return;
+      }
+      onFile(file.name, contents);
+    };
+    reader.onerror = () =>
+      report(
+        reader.error?.message
+          ? `Could not read "${file.name}": ${reader.error.message}`
+          : `Could not read "${file.name}".`,
+      );
+    reader.readAsArrayBuffer(file);
+  }
+
+  return (
+    <div
+      className={`filedrop ${dragging ? "filedrop-active" : ""} ${loadedName ? "filedrop-loaded" : ""}`.trim()}
+      role="button"
+      tabIndex={0}
+      aria-label={accept ? `${label} — accepts ${accept}` : label}
+      onClick={() => inputRef.current?.click()}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          inputRef.current?.click();
+        }
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={(e) => {
+        e.preventDefault();
+        setDragging(false);
+        const file = e.dataTransfer.files[0];
+        if (file) read(file);
+      }}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept={accept}
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) read(file);
+          e.target.value = "";
+        }}
+      />
+      {loadedName ? (
+        <div className="row" style={{ justifyContent: "center", color: "var(--accent-green)" }}>
+          <FileText size={18} /> <span className="mono">{loadedName}</span>
+        </div>
+      ) : (
+        <div className="stack" style={{ alignItems: "center", gap: 8 }}>
+          <Upload size={22} className="dim" />
+          <span className="dim">{label}</span>
+        </div>
+      )}
+      {!onError && localError && (
+        <div
+          className="row"
+          style={{ justifyContent: "center", gap: 6, marginTop: 10, color: "var(--accent-red)" }}
+        >
+          <AlertCircle size={14} /> <span>{localError}</span>
+        </div>
+      )}
+    </div>
+  );
+}

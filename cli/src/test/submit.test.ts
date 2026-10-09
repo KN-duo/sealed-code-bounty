@@ -7,6 +7,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
 import { execFileSync } from "child_process";
 
@@ -16,6 +17,7 @@ import {
   encodeSubmitExploitData,
   parseUploadResponse,
   submissionReference,
+  validateExploitZip,
 } from "../submit-lib";
 
 function repoRoot(): string {
@@ -93,26 +95,49 @@ test("malformed or legacy upload responses cannot produce a submission reference
   }
 });
 
-test("(T-DRY) dry-run prints payload shapes without network", () => {
-  const out = execFileSync(
-    process.execPath,
-    [
-      path.resolve(__dirname, "../scb-submit.js"),
-      "--rpc-url",
-      "http://127.0.0.1:8899",
-      "--keypair",
-      path.resolve(__dirname, "../../src/test/fixture-keypair.json"),
-      "--bounty",
-      `${"11111111111111111111111111111111"}:7`,
-      "--file",
-      path.resolve(__dirname, "../../src/test/fixture-exploit.py"),
-      "--enclave-url",
-      "http://127.0.0.1:8443",
-      "--dry-run",
-    ],
-    { encoding: "utf8" }
+test("exploit ZIP client guard enforces size and ZIP signatures", () => {
+  assert.doesNotThrow(() => validateExploitZip(Uint8Array.from([0x50, 0x4b, 0x03, 0x04])));
+  assert.throws(() => validateExploitZip(Uint8Array.from([0x23, 0x21, 0x2f, 0x62])), /ZIP archive/);
+  assert.throws(
+    () => validateExploitZip(Uint8Array.from([0x50, 0x4b, 0x03, 0x04, ...new Array(9_000).fill(0)])),
+    /9000 byte limit/,
   );
-  assert.match(out, /exploit_sealed_box_b64_len/);
-  assert.match(out, /submit_intent_sig_b64_len/);
-  assert.match(out, /submit_exploit data length: 134/);
+});
+
+test("(T-DRY) dry-run prints payload shapes without network", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "scb-submit-test-"));
+  const zipPath = path.join(tempDir, "exploit.zip");
+  // The client reads and seals exact ZIP bytes; the runner validates contents.
+  fs.writeFileSync(
+    zipPath,
+    Buffer.from(
+      "UEsDBBQAAAAIAOlbSV0Yn9XvDwAAAA0AAAAKAAAAZXhwbG9pdC5weSsoyswr0VBKy0lMV9IEAFBLAQIUAxQAAAAIAOlbSV0Yn9XvDwAAAA0AAAAKAAAAAAAAAAAAAACAAQAAAABleHBsb2l0LnB5UEsFBgAAAAABAAEAOAAAADcAAAAAAA==",
+      "base64",
+    ),
+  );
+  try {
+    const out = execFileSync(
+      process.execPath,
+      [
+        path.resolve(__dirname, "../scb-submit.js"),
+        "--rpc-url",
+        "http://127.0.0.1:8899",
+        "--keypair",
+        path.resolve(__dirname, "../../src/test/fixture-keypair.json"),
+        "--bounty",
+        `${"11111111111111111111111111111111"}:7`,
+        "--file",
+        zipPath,
+        "--enclave-url",
+        "http://127.0.0.1:8443",
+        "--dry-run",
+      ],
+      { encoding: "utf8" }
+    );
+    assert.match(out, /exploit_sealed_box_b64_len/);
+    assert.match(out, /submit_intent_sig_b64_len/);
+    assert.match(out, /submit_exploit data length: 134/);
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
 });

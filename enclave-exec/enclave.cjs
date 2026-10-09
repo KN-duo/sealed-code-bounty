@@ -1,17 +1,13 @@
-// Real-execution enclave (pre-TEE).
+// Legacy local JavaScript/Docker verifier prototype (NOT a Nitro Enclave).
 //
-// Exposes the exact /internal/* HTTP surface the relayer and the e2e harness
-// already speak to the mock — but the verdict is REAL: the enclave unseals the
-// hunter's exploit (only it can), runs it in a hidden Docker sandbox against the
-// bounty's target, and decides PASS/FAIL by whether the exploit captured the
-// bounty's secret flag. On PASS it re-seals the exploit to the buyer's key so the
-// buyer receives it as part of the paying transaction. Verdict signing and buyer
-// re-sealing mirror relayer/test/mock-enclave.cjs byte-for-byte, so the on-chain
-// program accepts these verdicts unchanged.
+// This process uses development secrets supplied through environment variables.
+// It unseals the submitted exploit in ordinary host process memory, then runs a
+// local Docker judge. Its V5-shaped verdict is accepted by the local test program,
+// but the process is not attested and is not a trustworthy production signer.
 //
-// This is the pre-TEE stand-in. Moving to the real TEE later means running this
-// same logic inside a Nitro Enclave with an in-enclave key — the wire surface and
-// the crypto are identical.
+// This prototype is retained for historical local Docker demonstrations only.
+// The production candidate is the Rust runner; moving anything into Nitro still
+// requires a native sandbox, attestation, and KMS-gated secret release.
 //
 // Run (on a Docker host, after enclave-exec/build.sh):
 //   SCB_MASTER_SECRET_HEX=$(openssl rand -hex 32) \
@@ -106,11 +102,12 @@ function flagCommitment(flagString) {
   return crypto.createHash("sha256").update(flagString).digest("hex");
 }
 
-// --- verdict message (mirrors mock-enclave.cjs / SCB_VERDICT_V4) -----------
-function buildMessage(pdaB58, envHex, exploitHex, solverB58, commitHex, buyerPkHex, outcome) {
+// --- verdict message (mirrors mock-enclave.cjs / SCB_VERDICT_V5) -----------
+function buildMessage(pdaB58, manifestHex, envHex, exploitHex, solverB58, commitHex, buyerPkHex, outcome) {
   return Buffer.concat([
-    Buffer.from("SCB_VERDICT_V4", "ascii"),
+    Buffer.from("SCB_VERDICT_V5", "ascii"),
     b58decode(pdaB58),
+    Buffer.from(manifestHex, "hex"),
     Buffer.from(envHex, "hex"),
     Buffer.from(exploitHex, "hex"),
     b58decode(solverB58),
@@ -310,6 +307,7 @@ const server = http.createServer((req, res) => {
 
         const msg = buildMessage(
           bounty_pda,
+          Buffer.from(acct.manifestSha256).toString("hex"),
           st.env_blob_sha256,
           st.exploit_sha256,
           rec.solver_pubkey,

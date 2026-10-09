@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:deploy": "node scripts/deploy-preflight.mjs && npm run build",
+    "test:deploy": "node --test scripts/deploy-preflight.test.mjs",
     "lint": "oxlint",
     "preview": "vite preview"
   },

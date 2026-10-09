@@ -43,46 +43,45 @@ The production claim is not complete until all of the following are true:
 
 ## Current verified state
 
-No AWS resources have been created by this work and no AWS deployment has run.
+No public website/API, AWS resources, devnet program, or mainnet program has
+been deployed. On the current machine `docker`, `nitro-cli`, `terraform`, and
+`aws`, `wrangler`, and `gh` are not installed. A static build is not a usable
+verifier service: the browser `/enclave` proxy, production cluster/program
+configuration, API authentication, and measured enclave are absent.
+The frontend now has a `build:deploy` preflight (with passing tests) that
+rejects absent or obviously local/malformed production settings. Its current
+build intentionally fails because no production cluster, program ID, RPC, or
+verifier URL is configured. This validates configuration shape only; it does
+not verify deployed services or attestation.
 
-Verified locally:
+Verified local implementation and tests (2026-10-09):
 
-- `bash enclave-exec/build.sh` builds `scb-target`, `scb-runtime`, and
-  `scb-workspace`.
-- `node enclave-exec/selftest.cjs` proves a real solution produces PASS, a
-  broken solution produces FAIL, buyer decryption works, and a per-bounty source
-  bundle can be built in explicitly enabled development mode.
-- Real execution drove a complete local Solana PASS settlement:
-  exact 0.5 SOL escrow payout, Receipt creation, and encrypted Reveal delivery.
-- Real execution drove a complete local Solana FAIL settlement: the slot
-  reopened, no Receipt or Reveal was created, and resubmission worked.
-- `examples/ret2win/solution/solve-timeout.py` exceeds a one-second judge limit;
-  it now reports `exploit timed out` and leaves no `scb-target-*`,
-  `scb-exploit-*`, or `scb-net-*` Docker artifacts.
-- Runner tests: 42 passed.
-- Relayer tests: 9 passed.
-- CLI tests: 7 passed.
-- Frontend production build passes.
-- Nitro framing tests: 3 passed.
+- `SCB_VERDICT_V5` binds the Bounty's manifest hash into the signed verdict;
+  Anchor reconstructs it from chain state. Cross-language positive and
+  mismatched-manifest cases pass.
+- Runner: 72 tests and Clippy with warnings denied pass. This includes sealed
+  upload persistence/recovery, fixed-key artifact hash checks, ZIP adversarial
+  validation, and Docker CLI argument-shim tests. Docker-backed execution of
+  the current Rust V5 path is **not verified**.
+- Relayer: 12 tests pass; pending work recovery and retry/backoff are local
+  implementations, not a hosted service.
+- CLI: 12 tests pass. Frontend lint/build pass. Anchor localnet has 29 passing
+  tests with `anchor test --skip-build --validator legacy`; `anchor build
+  --ignore-keys` passes. Normal `anchor build` still reports a source ID vs
+  preserved program-keypair mismatch; do not run `anchor keys sync` casually.
+- `nitro/` framing/storage broker suites and Terraform lifecycle checks are
+  offline tests only. A read-only Terraform plan (21 additions, no EC2
+  instance, deny-all PCR placeholder) was validated earlier on 2026-10-09; it
+  was not applied and the Terraform executable is no longer available here.
+- A prior pre-V5 JavaScript/Docker prototype and local settlement run were
+  recorded on 2026-10-08. They do not establish that the current Rust V5 path
+  runs in Docker or that any code runs inside Nitro.
 
-Important fixes already made in the dirty worktree:
-
-- `relayer/src/test/pipeline.test.ts` follows the built IDL program ID instead
-  of a stale hard-coded ID.
-- `enclave-exec/localnet-real.sh` supports configurable enclave ports, passes
-  the actual program ID to `scb-submit`, supports real PASS and FAIL modes, and
-  does not require Arweave packages in inline mode.
-- `e2e/chain.mjs` correctly decodes the variable-length Config operator vector.
-- `e2e/localnet.sh` waits for the relayer subscription before the unlock drill
-  submission and correctly treats the post-unlock balance delta as transaction
-  fee only.
-- `enclave-exec/execute.mjs` recognizes GNU `timeout` exit codes 124/137.
-- `nitro/` contains a tested length-prefixed vsock protocol, loopback parent
-  proxy, and vsock-only enclave proxy with endpoint allowlisting and limits.
-- `SECURITY_SCOPE.md` and frontend authorization notices were added.
-- Uploaded Dockerfile builds are disabled unless
-  `SCB_ALLOW_UNTRUSTED_TARGET_BUILDS=1`; arbitrary `source_url` fetching is
-  disabled.
+Key completed local changes include durable encrypted upload receipts,
+content-addressed manifest/environment retrieval and hashing, bounded ZIP
+handling, per-process single-execution admission, relayer restart recovery,
+and the parent/enclave storage transport prototype. They remain subject to
+the deployment gates below.
 
 ## Current stopping point (2026-10-09)
 
@@ -109,9 +108,13 @@ E2E RESULT: MODE=unlock-drill ALL ASSERTIONS PASSED
 The upload receipt contract and durable encrypted store are now implemented
 across frontend, CLI, runner, and relayer. Local tests prove receipt validation,
 restart recovery, stored-record substitution rejection, and relayer recovery.
-The S3 broker is covered by offline injected-client tests only; no AWS object
-storage or Nitro enclave has been run. Step 1.2 (content-addressed manifest and
-environment fetching) and Step 1.4 (production ZIP handling) remain open.
+Manifest and environment fetching now bind into the on-chain verdict with
+SCB_VERDICT_V5 and have passed local runner, relayer, and Anchor tests. The S3
+broker is covered by offline injected-client tests only; no AWS object storage
+or Nitro enclave has been run. Step 1.4's Rust ZIP handling and browser/CLI ZIP
+contract are implemented and covered by local adversarial tests. The V5 local
+Docker PASS/FAIL settlement cycle still needs to be rerun (Docker is not
+installed in the current workspace).
 No AWS resources have been created; the existing saved Terraform plan is stale
 and must not be applied.
 
@@ -130,33 +133,38 @@ tail -200 "$latest/validator.log"
 Gate passed: slot Open, submission absent, bond refunded, and only the
 transaction fee charged. Evidence is recorded in `tasks/todo.md`.
 
-### 1.2 Replace the missing environment locator contract
+### 1.2 Content-addressed environment locator — implemented locally
 
-Current on-chain `Bounty` stores `manifest_sha256` and `env_blob_sha256`, but no
-manifest URL. The relayer therefore cannot discover the committed environment.
-Do not pass host filesystem paths into the enclave in production.
+The on-chain `Bounty` stores `manifest_sha256` and `env_blob_sha256`, not an
+object URL. The relayer/runner now derive fixed object keys from those hashes;
+production still needs the approved storage bucket/origin configured. Do not
+pass host filesystem paths into the enclave in production.
 
-Implement a content-addressed storage convention:
+The content-addressed convention is implemented locally:
 
 - manifest object: `scb/manifests/<manifest_sha256>.json`
 - environment object: `scb/envs/<env_blob_sha256>.tar.gz`
-- configure one immutable HTTPS/S3 origin in the relayer;
-- derive object URLs from on-chain hashes, never from submission-controlled URLs;
-- fetch the manifest with an explicit byte cap;
-- hash canonical manifest bytes and compare with `manifest_sha256`;
-- parse a strict schema and reject unknown/unsafe values;
-- ensure `manifest.image_tarball.sha256 == env_blob_sha256`;
-- fetch the tarball with a streaming cap and compare its SHA-256;
-- pass verified bytes or an enclave-internal staged path plus parsed execution
-  limits to the runner;
-- ensure the parent cannot substitute a different target after verification.
+- object keys are derived from on-chain hashes, never submission URLs;
+- the manifest uses a strict schema, byte cap, canonical hash check, and must
+  name the committed environment hash;
+- the environment is streamed under a cap and hash-checked;
+- the runner stages the verified objects and uses the verified manifest limits;
+- the signature binds the manifest hash, preventing a parent from substituting
+  a different command set without invalidating the verdict.
 
-Preferred trust placement: the enclave fetches content through a narrow parent
-egress proxy and performs both hashes inside the enclave. If staging locally
-first, keep the same request contract and test vectors so trust can move inward
-without changing the chain protocol.
+The current implementation fetches fixed-key content through the narrow parent
+S3 broker and verifies the complete objects before sandbox use. This behavior
+has offline tests only; the production origin still needs configuration, and
+parent/enclave integration and AWS S3 have not run.
 
-Files likely involved:
+The content-addressed fetch, size/hash/schema checks, and enclave-internal
+staging are implemented. SCB_VERDICT_V5 includes the committed manifest hash,
+and the Anchor program rejects a verdict signed over a different hash. Current
+local verification passed: runner suite (72), relayer suite (12), and Anchor
+localnet suite (29). Real AWS object storage and Nitro execution remain
+unverified.
+
+Key files:
 
 - `relayer/src/pipeline.ts`
 - `relayer/src/enclave-types.ts`
@@ -166,23 +174,24 @@ Files likely involved:
 - `cli/src/upload.ts`
 - `frontend/src/lib/manifest.ts`
 
-Add tests for valid content, manifest mismatch, tarball mismatch, oversize
-manifest, oversize tarball, malformed JSON, unsupported scheme, redirect to a
-private address, and timeout. Do not permit `file://` in production mode.
+Those cases are covered locally. Keep the existing size, hash, schema,
+cancellation, and path-allowlist tests green when changing this contract.
 
-### 1.3 Unify the upload contract
+### 1.3 Unify the upload contract — implemented locally
 
-Canonical upload response is `{ "receipt": "<hex>" }`. Remove synthetic
-`https://blob.local/...` assumptions from production paths. The encrypted
-submission storage reference must be durable and hash-bound. Local mocks may use
-memory only when clearly selected by a development flag.
+The canonical upload response is `{ "receipt": "<hex>" }`; production code no
+longer invents `https://blob.local/...` references. The encrypted submission
+reference is durable and hash-bound locally. Production S3 durability is not
+live-tested, and in-memory stores remain test/dev-only.
 
-Gate: frontend, CLI, runner, relayer, and tests use the same typed contract.
+Gate passed locally: frontend, CLI, runner, relayer, and tests use the same
+typed `{receipt}` contract. Production S3 durability is not live-tested.
 
-### 1.4 Complete ZIP handling
+### 1.4 Complete ZIP handling — implemented locally
 
-The JavaScript prototype invokes `unzip` inside the runtime. Production must use
-the reviewed Rust safe-unpack discipline:
+The JavaScript prototype invokes `unzip` inside the runtime. The Rust runner
+implements the intended bounded extraction path; production deployment remains
+gated on real Docker and Nitro verification:
 
 - cap compressed and expanded bytes;
 - cap file count and path length;
@@ -190,34 +199,53 @@ the reviewed Rust safe-unpack discipline:
 - require `exploit.py` or a strictly validated top-level
   `scb-exploit.json` entrypoint;
 - reject shell command strings; use argument arrays;
-- zeroize and remove the unpacked work directory on every exit path.
+- zeroize extracted plaintext files best-effort and remove the private workspace
+  on every exit path; mount it read-only in the exploit container.
 
-Add adversarial fixtures and unit tests.
+Adversarial Rust tests cover normal archives, traversal, symlinks, duplicate
+paths, malformed/shell entrypoints, expanded-size, file-count, path-length, and
+compressed-size caps, plus zeroize-and-remove cleanup. Browser and CLI clients
+accept ZIP signatures and enforce the same 9,000-byte compressed cap; the runner
+is authoritative for full archive validation. Real Docker execution remains a
+separate Step 1 verification gate.
 
 ### 1.5 Step 1 verification commands
 
+Current local gates (all passed on 2026-10-09):
+
 ```bash
-(cd runner && cargo test)
-(cd runner && cargo clippy --all-targets -- -D warnings)
+(cd runner && cargo test --locked)
+(cd runner && cargo clippy --locked --all-targets -- -D warnings)
 (cd relayer && npm test)
 (cd cli && npm test)
 (cd frontend && npm run lint && npm run build)
 python3 nitro/test_protocol.py
-node enclave-exec/selftest.cjs
-
-ENCLAVE_PORT=8543 SCB_REVEAL_STORE=inline \
-  SCB_EXPLOIT_FILE=enclave-exec/solve-compact.py \
-  bash enclave-exec/localnet-real.sh
-
-ENCLAVE_PORT=8544 SCB_REVEAL_STORE=inline \
-  SCB_EXPLOIT_FILE=examples/ret2win/solution/solve-broken.py \
-  SCB_EXPECT_OUTCOME=FAIL bash enclave-exec/localnet-real.sh
-
+python3 nitro/test_storage.py
+python3 nitro/test_storage_artifacts.py
+anchor build --ignore-keys
+anchor test --skip-build --validator legacy
 bash e2e/localnet.sh unlock-drill
 ```
 
-Run the real PASS cycle twice consecutively. Record commands and results under
-`tasks/todo.md` Review. Mark Step 1 complete only when everything is green.
+The following existing smoke scripts use the legacy JavaScript process/Docker
+prototype (`enclave-exec/enclave.cjs`), not the current Rust V5 runner. They
+are not a substitute for the open Step 1 gate and their keys are process-held:
+
+```bash
+node enclave-exec/selftest.cjs
+ENCLAVE_PORT=8543 SCB_REVEAL_STORE=inline \
+  SCB_EXPLOIT_FILE=enclave-exec/solve-compact.py \
+  bash enclave-exec/localnet-real.sh
+```
+
+Docker, Nitro CLI, Terraform, and AWS CLI are absent on the current machine.
+The current Rust runner's Docker-backed PASS/FAIL execution and browser/localnet
+settlement remain to be implemented/proven on a Docker-capable host; the
+legacy scripts do not close this gate.
+
+Build a Rust-runner-backed local PASS/FAIL and settlement harness, run the PASS
+cycle twice consecutively, and record commands/results under `tasks/todo.md`
+Review. Mark Step 1 complete only when that current path is green.
 
 ## Step 2 — complete the Nitro trust boundary
 

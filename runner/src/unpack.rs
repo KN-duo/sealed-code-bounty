@@ -1,4 +1,4 @@
-//! Safe unpacking of the environment tarball (§4.3 step 2).
+//! Safe unpacking of environment tarballs and sealed exploit ZIPs (§4.3 step 2).
 //!
 //! Hard rules, enforced structurally:
 //!  * total uncompressed size ≤ `max_total_bytes` (zip-bomb defense)
@@ -9,7 +9,8 @@
 //!    escape vector out of the staging directory
 //!  * only regular files and directories are extracted
 
-use std::io::Read;
+use std::collections::HashSet;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -35,6 +36,12 @@ pub enum UnpackError {
     UnsupportedEntryType(String),
     TooManyFiles { limit: usize },
     TotalSizeExceeded { limit: u64 },
+    CompressedSizeExceeded { limit: usize },
+    PathTooLong { limit: usize },
+    DuplicatePath(String),
+    InvalidArchive(String),
+    InvalidEntrypoint(String),
+    MissingEntrypoint,
 }
 
 impl std::fmt::Display for UnpackError {
@@ -48,7 +55,22 @@ impl std::fmt::Display for UnpackError {
             }
             UnpackError::TooManyFiles { limit } => write!(f, "too many files (limit {limit})"),
             UnpackError::TotalSizeExceeded { limit } => {
-                write!(f, "total uncompressed size exceeds {limit} bytes (zip bomb?)")
+                write!(
+                    f,
+                    "total uncompressed size exceeds {limit} bytes (zip bomb?)"
+                )
+            }
+            UnpackError::CompressedSizeExceeded { limit } => {
+                write!(f, "compressed exploit exceeds {limit} bytes")
+            }
+            UnpackError::PathTooLong { limit } => {
+                write!(f, "archive path exceeds {limit} bytes")
+            }
+            UnpackError::DuplicatePath(p) => write!(f, "duplicate archive path: {p}"),
+            UnpackError::InvalidArchive(e) => write!(f, "invalid exploit archive: {e}"),
+            UnpackError::InvalidEntrypoint(e) => write!(f, "invalid exploit entrypoint: {e}"),
+            UnpackError::MissingEntrypoint => {
+                write!(f, "archive must contain exploit.py or scb-exploit.json")
             }
         }
     }
@@ -58,6 +80,390 @@ impl From<std::io::Error> for UnpackError {
     fn from(e: std::io::Error) -> Self {
         UnpackError::Io(e)
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ExploitZipLimits {
+    pub max_compressed_bytes: usize,
+    pub max_total_bytes: u64,
+    pub max_files: usize,
+    pub max_path_bytes: usize,
+    pub max_config_bytes: usize,
+    pub max_command_args: usize,
+    pub max_command_arg_bytes: usize,
+}
+
+impl Default for ExploitZipLimits {
+    fn default() -> Self {
+        Self {
+            max_compressed_bytes: 9_000,
+            max_total_bytes: 2 * 1024 * 1024,
+            max_files: 128,
+            max_path_bytes: 240,
+            max_config_bytes: 4 * 1024,
+            max_command_args: 16,
+            max_command_arg_bytes: 256,
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExploitConfig {
+    format_version: u32,
+    entrypoint: Vec<String>,
+}
+
+#[derive(Debug)]
+pub struct UnpackedExploit {
+    /// Argument vector used directly by DockerCli. The executable is fixed to
+    /// python3; archives cannot provide a shell command string.
+    pub entrypoint: Vec<String>,
+    pub files: usize,
+    pub total_bytes: u64,
+}
+
+/// A private temporary directory whose extracted plaintext files are
+/// overwritten best-effort and whose directory is removed on every Drop path.
+pub struct ExploitWorkspace {
+    inner: tempfile::TempDir,
+    plaintext_files: Vec<PathBuf>,
+    zeroize_cap: u64,
+}
+
+impl ExploitWorkspace {
+    pub fn new(parent: &Path, zeroize_cap: u64) -> Result<Self, UnpackError> {
+        Ok(Self {
+            inner: tempfile::Builder::new()
+                .prefix("scb-exploit-")
+                .tempdir_in(parent)?,
+            plaintext_files: Vec::new(),
+            zeroize_cap,
+        })
+    }
+
+    pub fn path(&self) -> &Path {
+        self.inner.path()
+    }
+
+    pub fn unpack_zip(
+        &mut self,
+        bytes: &[u8],
+        limits: &ExploitZipLimits,
+    ) -> Result<UnpackedExploit, UnpackError> {
+        if bytes.len() > limits.max_compressed_bytes {
+            return Err(UnpackError::CompressedSizeExceeded {
+                limit: limits.max_compressed_bytes,
+            });
+        }
+
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+            .map_err(|e| UnpackError::InvalidArchive(e.to_string()))?;
+        // The ZIP reader stores names in a map and can collapse duplicate
+        // central-directory names. Inspect the raw directory first so an
+        // ambiguous archive is rejected instead of inheriting that policy.
+        preflight_zip_directory(bytes, archive.central_directory_start(), limits)?;
+
+        let mut seen = HashSet::new();
+        let mut extracted_files = HashSet::new();
+        let mut config_bytes = None;
+        let mut total = 0u64;
+        let mut file_count = 0usize;
+
+        for index in 0..archive.len() {
+            let mut entry = archive
+                .by_index(index)
+                .map_err(|e| UnpackError::InvalidArchive(e.to_string()))?;
+            let raw_name = std::str::from_utf8(entry.name_raw())
+                .map_err(|_| UnpackError::InvalidArchive("non-UTF-8 path".into()))?;
+            let is_dir = entry.is_dir();
+            let rel = safe_zip_relative(raw_name, is_dir, limits.max_path_bytes)?;
+            if !seen.insert(rel.clone()) {
+                return Err(UnpackError::DuplicatePath(rel.display().to_string()));
+            }
+
+            let mode_type = entry.unix_mode().unwrap_or(0) & 0o170000;
+            if mode_type == 0o120000 {
+                return Err(UnpackError::LinkRejected(raw_name.to_string()));
+            }
+            if is_dir {
+                if mode_type != 0 && mode_type != 0o040000 {
+                    return Err(UnpackError::UnsupportedEntryType(raw_name.to_string()));
+                }
+                std::fs::create_dir_all(self.path().join(&rel))?;
+                continue;
+            }
+            if mode_type != 0 && mode_type != 0o100000 {
+                return Err(UnpackError::UnsupportedEntryType(raw_name.to_string()));
+            }
+
+            file_count += 1;
+            if file_count > limits.max_files {
+                return Err(UnpackError::TooManyFiles {
+                    limit: limits.max_files,
+                });
+            }
+            let declared_size = entry.size();
+            total = total
+                .checked_add(declared_size)
+                .ok_or(UnpackError::TotalSizeExceeded {
+                    limit: limits.max_total_bytes,
+                })?;
+            if total > limits.max_total_bytes {
+                return Err(UnpackError::TotalSizeExceeded {
+                    limit: limits.max_total_bytes,
+                });
+            }
+            if rel == Path::new("scb-exploit.json")
+                && declared_size > limits.max_config_bytes as u64
+            {
+                return Err(UnpackError::InvalidEntrypoint(
+                    "scb-exploit.json exceeds the config size limit".into(),
+                ));
+            }
+
+            let target = self.path().join(&rel);
+            if let Some(parent) = target.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let mut out = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+            self.plaintext_files.push(rel.clone());
+
+            let mut config = (rel == Path::new("scb-exploit.json"))
+                .then(|| Vec::with_capacity(declared_size as usize));
+            let mut copied = 0u64;
+            let mut buffer = [0u8; 16 * 1024];
+            loop {
+                let count = entry.read(&mut buffer)?;
+                if count == 0 {
+                    break;
+                }
+                copied =
+                    copied
+                        .checked_add(count as u64)
+                        .ok_or(UnpackError::TotalSizeExceeded {
+                            limit: limits.max_total_bytes,
+                        })?;
+                if copied > declared_size || copied > limits.max_total_bytes {
+                    return Err(UnpackError::InvalidArchive(
+                        "entry expanded beyond its declared size".into(),
+                    ));
+                }
+                out.write_all(&buffer[..count])?;
+                if let Some(config) = &mut config {
+                    config.extend_from_slice(&buffer[..count]);
+                }
+            }
+            if copied != declared_size {
+                return Err(UnpackError::InvalidArchive(
+                    "entry size did not match its central directory record".into(),
+                ));
+            }
+            out.sync_all()?;
+            drop(out);
+            extracted_files.insert(rel.clone());
+            if config.is_some() {
+                config_bytes = config;
+            }
+        }
+
+        let has_default = extracted_files.contains(Path::new("exploit.py"));
+        let entrypoint = if let Some(bytes) = config_bytes {
+            if has_default {
+                return Err(UnpackError::InvalidEntrypoint(
+                    "include either exploit.py or scb-exploit.json, not both".into(),
+                ));
+            }
+            let config: ExploitConfig = serde_json::from_slice(&bytes)
+                .map_err(|e| UnpackError::InvalidEntrypoint(e.to_string()))?;
+            if config.format_version != 1 {
+                return Err(UnpackError::InvalidEntrypoint(
+                    "format_version must be 1".into(),
+                ));
+            }
+            validate_exploit_entrypoint(&config.entrypoint, &extracted_files, limits)?
+        } else if has_default {
+            vec!["python3".into(), "exploit.py".into()]
+        } else {
+            return Err(UnpackError::MissingEntrypoint);
+        };
+
+        Ok(UnpackedExploit {
+            entrypoint,
+            files: file_count,
+            total_bytes: total,
+        })
+    }
+}
+
+fn preflight_zip_directory(
+    bytes: &[u8],
+    start: u64,
+    limits: &ExploitZipLimits,
+) -> Result<(), UnpackError> {
+    const CENTRAL: &[u8; 4] = b"PK\x01\x02";
+    const EOCD: &[u8; 4] = b"PK\x05\x06";
+    const ZIP64_EOCD: &[u8; 4] = b"PK\x06\x06";
+    const FIXED_LEN: usize = 46;
+
+    let mut offset = usize::try_from(start)
+        .map_err(|_| UnpackError::InvalidArchive("central directory offset overflow".into()))?;
+    let mut count = 0usize;
+    let mut paths = HashSet::new();
+    loop {
+        let signature = bytes
+            .get(offset..offset.saturating_add(4))
+            .ok_or_else(|| UnpackError::InvalidArchive("truncated central directory".into()))?;
+        if signature == EOCD || signature == ZIP64_EOCD {
+            return Ok(());
+        }
+        if signature != CENTRAL {
+            return Err(UnpackError::InvalidArchive(
+                "unexpected central directory record".into(),
+            ));
+        }
+        let fixed_end = offset
+            .checked_add(FIXED_LEN)
+            .ok_or_else(|| UnpackError::InvalidArchive("central directory overflow".into()))?;
+        let fixed = bytes.get(offset..fixed_end).ok_or_else(|| {
+            UnpackError::InvalidArchive("truncated central directory entry".into())
+        })?;
+        let name_len = u16::from_le_bytes([fixed[28], fixed[29]]) as usize;
+        let extra_len = u16::from_le_bytes([fixed[30], fixed[31]]) as usize;
+        let comment_len = u16::from_le_bytes([fixed[32], fixed[33]]) as usize;
+        let name_end = fixed_end
+            .checked_add(name_len)
+            .ok_or_else(|| UnpackError::InvalidArchive("central path length overflow".into()))?;
+        let record_end = name_end
+            .checked_add(extra_len)
+            .and_then(|v| v.checked_add(comment_len))
+            .ok_or_else(|| UnpackError::InvalidArchive("central record length overflow".into()))?;
+        let raw_name = bytes
+            .get(fixed_end..name_end)
+            .ok_or_else(|| UnpackError::InvalidArchive("truncated central path".into()))?;
+        let name = std::str::from_utf8(raw_name)
+            .map_err(|_| UnpackError::InvalidArchive("non-UTF-8 path".into()))?;
+        let rel = safe_zip_relative(name, name.ends_with('/'), limits.max_path_bytes)?;
+        if !paths.insert(rel.clone()) {
+            return Err(UnpackError::DuplicatePath(rel.display().to_string()));
+        }
+        count += 1;
+        if count > limits.max_files {
+            return Err(UnpackError::TooManyFiles {
+                limit: limits.max_files,
+            });
+        }
+        if record_end > bytes.len() {
+            return Err(UnpackError::InvalidArchive(
+                "truncated central directory record".into(),
+            ));
+        }
+        offset = record_end;
+    }
+}
+
+impl Drop for ExploitWorkspace {
+    fn drop(&mut self) {
+        for rel in &self.plaintext_files {
+            let path = self.path().join(rel);
+            let Ok(meta) = std::fs::symlink_metadata(&path) else {
+                continue;
+            };
+            if !meta.file_type().is_file() || meta.len() > self.zeroize_cap {
+                continue;
+            }
+            let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(&path) else {
+                continue;
+            };
+            let mut remaining = meta.len();
+            let zeros = [0u8; 8192];
+            while remaining > 0 {
+                let count =
+                    usize::try_from(remaining.min(zeros.len() as u64)).unwrap_or(zeros.len());
+                if file.write_all(&zeros[..count]).is_err() {
+                    break;
+                }
+                remaining -= count as u64;
+            }
+            let _ = file.sync_all();
+        }
+        // TempDir's Drop removes the tree without following symlinks.
+    }
+}
+
+fn safe_zip_relative(
+    name: &str,
+    is_dir: bool,
+    max_path_bytes: usize,
+) -> Result<PathBuf, UnpackError> {
+    if name.len() > max_path_bytes {
+        return Err(UnpackError::PathTooLong {
+            limit: max_path_bytes,
+        });
+    }
+    if name.is_empty()
+        || name.contains('\\')
+        || name.contains('\0')
+        || name.starts_with('/')
+        || name.contains(':')
+    {
+        return Err(UnpackError::Traversal(name.to_string()));
+    }
+    let without_slash = if is_dir {
+        name.strip_suffix('/').unwrap_or(name)
+    } else {
+        name
+    };
+    let path = Path::new(without_slash);
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(part) => normalized.push(part),
+            _ => return Err(UnpackError::Traversal(name.to_string())),
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        return Err(UnpackError::Traversal(name.to_string()));
+    }
+    Ok(normalized)
+}
+
+fn validate_exploit_entrypoint(
+    args: &[String],
+    files: &HashSet<PathBuf>,
+    limits: &ExploitZipLimits,
+) -> Result<Vec<String>, UnpackError> {
+    if args.len() < 2 || args.len() > limits.max_command_args {
+        return Err(UnpackError::InvalidEntrypoint(
+            "entrypoint must be a bounded argument array with a Python script".into(),
+        ));
+    }
+    if args[0] != "python3" {
+        return Err(UnpackError::InvalidEntrypoint(
+            "entrypoint executable must be python3".into(),
+        ));
+    }
+    for arg in args {
+        if arg.is_empty() || arg.len() > limits.max_command_arg_bytes || arg.contains('\0') {
+            return Err(UnpackError::InvalidEntrypoint(
+                "entrypoint argument is empty or too long".into(),
+            ));
+        }
+    }
+    let script = Path::new(&args[1]);
+    let safe_script = safe_zip_relative(&args[1], false, limits.max_path_bytes)
+        .map_err(|_| UnpackError::InvalidEntrypoint("entrypoint script path is unsafe".into()))?;
+    if script.extension().and_then(|ext| ext.to_str()) != Some("py")
+        || !files.contains(&safe_script)
+    {
+        return Err(UnpackError::InvalidEntrypoint(
+            "entrypoint must name an extracted .py file".into(),
+        ));
+    }
+    Ok(args.to_vec())
 }
 
 /// Validates `rel` as a safe relative path inside `dest`.
@@ -102,7 +508,9 @@ pub fn extract_gz_tar<R: Read>(
                 continue;
             }
             tar::EntryType::Symlink | tar::EntryType::Link => {
-                return Err(UnpackError::LinkRejected(header.path()?.display().to_string()));
+                return Err(UnpackError::LinkRejected(
+                    header.path()?.display().to_string(),
+                ));
             }
             other => {
                 return Err(UnpackError::UnsupportedEntryType(format!(
@@ -144,7 +552,7 @@ pub fn extract_gz_tar<R: Read>(
 mod tests {
     use super::*;
     use flate2::write::GzEncoder;
-    use std::io::Write;
+    use std::io::{Cursor, Read, Write};
     use tar::Builder;
     use tempfile::TempDir;
 
@@ -158,10 +566,204 @@ mod tests {
         enc.finish().unwrap()
     }
 
+    fn zip_files(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for (name, bytes) in entries {
+            archive
+                .start_file(*name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            archive.write_all(bytes).unwrap();
+        }
+        archive.finish().unwrap().into_inner()
+    }
+
+    fn mark_first_zip_entry_as_symlink(mut archive: Vec<u8>) -> Vec<u8> {
+        let central = archive
+            .windows(4)
+            .position(|window| window == b"PK\x01\x02")
+            .expect("central directory entry");
+        archive[central + 5] = 3; // Unix creator OS
+        let mode = (0o120777u32 << 16).to_le_bytes();
+        archive[central + 38..central + 42].copy_from_slice(&mode);
+        archive
+    }
+
+    fn duplicate_second_zip_name(mut archive: Vec<u8>) -> Vec<u8> {
+        let matches: Vec<usize> = archive
+            .windows(4)
+            .enumerate()
+            .filter_map(|(i, window)| (window == b"b.py").then_some(i))
+            .collect();
+        assert_eq!(matches.len(), 2); // local header and central directory
+        for i in matches {
+            archive[i] = b'a';
+        }
+        archive
+    }
+
+    #[test]
+    fn exploit_zip_default_entrypoint_extracts_and_zeroizes_then_removes() {
+        let archive = zip_files(&[
+            ("exploit.py", b"print('flag')"),
+            ("helpers/payload.bin", b"payload"),
+        ]);
+        let parent = TempDir::new().unwrap();
+        let mut workspace = ExploitWorkspace::new(parent.path(), 2 * 1024 * 1024).unwrap();
+        let unpacked = workspace
+            .unpack_zip(&archive, &ExploitZipLimits::default())
+            .unwrap();
+        assert_eq!(unpacked.entrypoint, ["python3", "exploit.py"]);
+        assert_eq!(unpacked.files, 2);
+        assert_eq!(unpacked.total_bytes, 20);
+        let workspace_path = workspace.path().to_path_buf();
+        let mut open_plaintext = std::fs::File::open(workspace.path().join("exploit.py")).unwrap();
+        drop(workspace);
+        let mut zeroized = Vec::new();
+        open_plaintext.read_to_end(&mut zeroized).unwrap();
+        assert_eq!(zeroized, vec![0; b"print('flag')".len()]);
+        assert!(!workspace_path.exists());
+    }
+
+    #[test]
+    fn exploit_zip_accepts_bounded_python_argv_config() {
+        let config =
+            br#"{"format_version":1,"entrypoint":["python3","src/run.py","--mode","fast"]}"#;
+        let archive = zip_files(&[
+            ("scb-exploit.json", config),
+            ("src/run.py", b"print('flag')"),
+        ]);
+        let workspace_parent = TempDir::new().unwrap();
+        let mut workspace =
+            ExploitWorkspace::new(workspace_parent.path(), 2 * 1024 * 1024).unwrap();
+        let unpacked = workspace
+            .unpack_zip(&archive, &ExploitZipLimits::default())
+            .unwrap();
+        assert_eq!(
+            unpacked.entrypoint,
+            ["python3", "src/run.py", "--mode", "fast"]
+        );
+        assert_eq!(unpacked.files, 2);
+    }
+
+    #[test]
+    fn exploit_zip_rejects_traversal_absolute_and_backslash_paths() {
+        for name in ["../escape.py", "/absolute.py", "dir\\escape.py"] {
+            let archive = zip_files(&[(name, b"print('bad')")]);
+            let workspace_parent = TempDir::new().unwrap();
+            let mut workspace =
+                ExploitWorkspace::new(workspace_parent.path(), 2 * 1024 * 1024).unwrap();
+            let err = workspace
+                .unpack_zip(&archive, &ExploitZipLimits::default())
+                .unwrap_err();
+            assert!(matches!(err, UnpackError::Traversal(_)), "{name}: {err}");
+        }
+    }
+
+    #[test]
+    fn exploit_zip_rejects_symlink_entries() {
+        let archive = mark_first_zip_entry_as_symlink(zip_files(&[("exploit.py", b"target")]));
+        let workspace_parent = TempDir::new().unwrap();
+        let mut workspace =
+            ExploitWorkspace::new(workspace_parent.path(), 2 * 1024 * 1024).unwrap();
+        let err = workspace
+            .unpack_zip(&archive, &ExploitZipLimits::default())
+            .unwrap_err();
+        assert!(matches!(err, UnpackError::LinkRejected(_)), "{err}");
+    }
+
+    #[test]
+    fn exploit_zip_enforces_expanded_compressed_file_and_path_caps() {
+        let archive = zip_files(&[("exploit.py", &vec![b'x'; 4096])]);
+        let parent = TempDir::new().unwrap();
+        let mut workspace = ExploitWorkspace::new(parent.path(), 128).unwrap();
+        let limits = ExploitZipLimits {
+            max_total_bytes: 128,
+            ..ExploitZipLimits::default()
+        };
+        assert!(matches!(
+            workspace.unpack_zip(&archive, &limits),
+            Err(UnpackError::TotalSizeExceeded { .. })
+        ));
+
+        let two_files = zip_files(&[("exploit.py", b"x"), ("helper.py", b"y")]);
+        let limits = ExploitZipLimits {
+            max_files: 1,
+            ..ExploitZipLimits::default()
+        };
+        assert!(matches!(
+            workspace.unpack_zip(&two_files, &limits),
+            Err(UnpackError::TooManyFiles { .. })
+        ));
+
+        let limits = ExploitZipLimits {
+            max_path_bytes: 8,
+            ..ExploitZipLimits::default()
+        };
+        assert!(matches!(
+            workspace.unpack_zip(&zip_files(&[("exploit.py", b"x")]), &limits),
+            Err(UnpackError::PathTooLong { .. })
+        ));
+
+        let limits = ExploitZipLimits {
+            max_compressed_bytes: 4,
+            ..ExploitZipLimits::default()
+        };
+        assert!(matches!(
+            workspace.unpack_zip(&zip_files(&[("exploit.py", b"x")]), &limits),
+            Err(UnpackError::CompressedSizeExceeded { .. })
+        ));
+    }
+
+    #[test]
+    fn exploit_zip_rejects_duplicates_missing_and_untrusted_entrypoints() {
+        let parent = TempDir::new().unwrap();
+        let mut workspace = ExploitWorkspace::new(parent.path(), 2 * 1024 * 1024).unwrap();
+        let duplicate = duplicate_second_zip_name(zip_files(&[("a.py", b"one"), ("b.py", b"two")]));
+        let duplicate_error = workspace
+            .unpack_zip(&duplicate, &ExploitZipLimits::default())
+            .unwrap_err();
+        assert!(
+            matches!(
+                &duplicate_error,
+                UnpackError::DuplicatePath(_) | UnpackError::InvalidArchive(_)
+            ),
+            "{duplicate_error}"
+        );
+        let normalized_duplicate = zip_files(&[("dir//run.py", b"one"), ("dir/run.py", b"two")]);
+        assert!(matches!(
+            workspace.unpack_zip(&normalized_duplicate, &ExploitZipLimits::default()),
+            Err(UnpackError::DuplicatePath(_))
+        ));
+        assert!(matches!(
+            workspace.unpack_zip(
+                &zip_files(&[("readme.txt", b"hello")]),
+                &ExploitZipLimits::default()
+            ),
+            Err(UnpackError::MissingEntrypoint)
+        ));
+
+        for config in [
+            br#"{"format_version":1,"entrypoint":"python3 -c 'bad'"}"#.as_slice(),
+            br#"{"format_version":1,"entrypoint":["sh","-c","bad"]}"#.as_slice(),
+            br#"{"format_version":1,"entrypoint":["python3","../escape.py"]}"#.as_slice(),
+            br#"{"format_version":1,"entrypoint":["python3","run.py"],"command":"sh -c bad"}"#
+                .as_slice(),
+        ] {
+            let archive = zip_files(&[("scb-exploit.json", config), ("run.py", b"pass")]);
+            let config_parent = TempDir::new().unwrap();
+            let mut config_workspace =
+                ExploitWorkspace::new(config_parent.path(), 2 * 1024 * 1024).unwrap();
+            assert!(matches!(
+                config_workspace.unpack_zip(&archive, &ExploitZipLimits::default()),
+                Err(UnpackError::InvalidEntrypoint(_))
+            ));
+        }
+    }
+
     #[test]
     fn happy_path_extracts_regular_tree() {
         let blob = gz(|b: &mut Builder<Vec<u8>>| {
-                let add = |b: &mut Builder<Vec<u8>>, name: &str, data: &[u8]| {
+            let add = |b: &mut Builder<Vec<u8>>, name: &str, data: &[u8]| {
                 let mut h = tar::Header::new_gnu();
                 if data.is_empty() {
                     // directory-style entry
@@ -182,8 +784,7 @@ mod tests {
         });
 
         let tmp = TempDir::new().unwrap();
-        let (n, total) =
-            extract_gz_tar(&blob[..], tmp.path(), &UnpackLimits::default()).unwrap();
+        let (n, total) = extract_gz_tar(&blob[..], tmp.path(), &UnpackLimits::default()).unwrap();
         assert_eq!(n, 2);
         assert!(total >= 7 + 15);
         assert!(tmp.path().join("etc/motd").exists());

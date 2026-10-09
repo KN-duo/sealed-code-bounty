@@ -25,15 +25,13 @@ export function mockFlagCommitment(bountyPda) {
 // --- verdict policy --------------------------------------------------------
 
 export const VERDICT_RULE =
-  "PASS unless the exploit matches /broken/i or is under 20 bytes";
+  "PASS unless the sealed payload is under 20 bytes (mock only; no execution)";
 
 function decide(plaintext, force) {
   if (force === "pass") return { outcome: true, why: "--always pass" };
   if (force === "fail") return { outcome: false, why: "--always fail" };
-  const text = Buffer.from(plaintext).toString("utf8");
-  if (text.length < 20) return { outcome: false, why: "exploit under 20 bytes" };
-  if (/broken/i.test(text)) return { outcome: false, why: "exploit matches /broken/i" };
-  return { outcome: true, why: "no failure marker found" };
+  if (Buffer.from(plaintext).length < 20) return { outcome: false, why: "payload under 20 bytes" };
+  return { outcome: true, why: "mock does not execute submissions" };
 }
 
 // --- HTTP ------------------------------------------------------------------

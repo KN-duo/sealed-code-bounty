@@ -1,11 +1,12 @@
-# enclave-exec — the judging core (pre-TEE)
+# enclave-exec — legacy local Docker judging prototype (not a TEE)
 
-The one genuinely new capability behind the whole workflow: **run a hunter's
+This standalone prototype demonstrates: **run a hunter's
 exploit against a live target, with a secret flag, and decide PASS/FAIL by
-whether the exploit captured the flag.** This is the pre-TEE stand-in for what
-will eventually run inside the TEE. Everything else in the payout cycle (escrow,
-verdict signing, atomic reveal) already exists — this is the piece that makes the
-verdict *real* instead of mocked.
+whether the exploit captured the flag.** It is a pre-TEE stand-in and does not
+provide hardware isolation or production confidentiality. The escrow, verdict,
+and reveal components have local implementations/tests, but the complete
+workflow has not been deployed or proven inside Nitro. Do not treat this Docker
+prototype as the production verifier.
 
 It uses the same Docker mechanism the `hunter-vm/` POC proved, hardened into a
 judge:
@@ -59,13 +60,12 @@ no external egress) but not the full TEE isolation — that is what the TEE phas
 adds.
 
 
-## The enclave (real verdicts wired to the payout surface)
+## Legacy HTTP prototype
 
-`enclave.cjs` wraps the judge in the exact `/internal/*` HTTP surface the relayer
-already speaks — but the verdict is real. It unseals the hunter's exploit (only it
-can), runs `judge()`, signs the verdict, and on PASS re-seals the exploit to the
-buyer. The submission may be a single `.py` or a **zip** (unpacked + run inside the
-sandbox; entrypoint `exploit.py` or a `scb-exploit.json` "entrypoint").
+`enclave.cjs` is a legacy prototype that wraps the judge in the `/internal/*`
+HTTP surface. Its JavaScript ZIP extraction is not the production path. The Rust
+runner now accepts only bounded ZIP archives, applies the reviewed extraction
+rules, and invokes the validated Python argument array.
 
 Verify the whole thing end to end, no chain needed:
 
@@ -76,6 +76,7 @@ node enclave-exec/selftest.cjs      # spawns the enclave, seals a real exploit,
                                     # and checks the buyer can decrypt the reveal
 ```
 
-Expected: PASS for solve.py, FAIL for solve-broken.py, and the buyer decrypts the
-delivered exploit. Next: point the localnet harness at this enclave so a real PASS
-drives the on-chain escrow payout.
+Expected on a Docker-capable host: PASS for solve.py, FAIL for solve-broken.py,
+and buyer decryption succeeds. This validates only the local Docker prototype;
+the V5 runner integration, Nitro sandbox, attestation, KMS release, and deployed
+settlement path remain separate gates.

@@ -30,12 +30,13 @@ interface VerdictVector {
   operator_pubkey_hex: string;
   flag_commitment_hex: string;
   buyer_enc_pk_hex: string;
+  manifest_sha256_hex: string;
   outcome_byte: string;
   message_hex: string;
   signature_b64: string;
 }
 function loadVerdictVector(): VerdictVector {
-  const p = path.resolve(repoRoot(), "test-vectors/verdict_v4.json");
+  const p = path.resolve(repoRoot(), "test-vectors/verdict_v5.json");
   return JSON.parse(fs.readFileSync(p, "utf8")) as VerdictVector;
 }
 import assert from "node:assert/strict";
@@ -184,7 +185,7 @@ function depsWith(
 // (T1) verdict wire reconstruction — the bytes everything else stands on
 // ---------------------------------------------------------------------------
 
-test("(T1) SCB_VERDICT_V4: TS reconstruction == canonical vector, field by field", () => {
+test("(T1) SCB_VERDICT_V5: TS reconstruction == canonical vector, field by field", () => {
   const vec = loadVerdictVector();
   const wire = Buffer.from(vec.message_hex, "hex");
   const tag = Buffer.from(vec.tag_ascii, "ascii");
@@ -203,6 +204,7 @@ test("(T1) SCB_VERDICT_V4: TS reconstruction == canonical vector, field by field
   const pda = b58decode(vec.bounty_pda_b58);
   const rebuilt = buildVerdictMessage({
     bountyPda: pda,
+    manifestSha256: Buffer.from(vec.manifest_sha256_hex, "hex"),
     envBlobSha256: Buffer.from(vec.env_blob_sha256_hex, "hex"),
     exploitSha256: Buffer.from(vec.exploit_sha256_hex, "hex"),
     solver: Buffer.from(vec.solver_pubkey_hex, "hex"),
@@ -217,6 +219,7 @@ test("(T1) SCB_VERDICT_V4: TS reconstruction == canonical vector, field by field
 
   // And the pipeline's reconstruction over a matching chain view agrees too.
   const { bounty, job } = bountyFixture();
+  bounty.manifestSha256 = new Uint8Array(Buffer.from(vec.manifest_sha256_hex, "hex"));
   bounty.envBlobSha256 = new Uint8Array(Buffer.from(vec.env_blob_sha256_hex, "hex"));
   bounty.flagCommitment = new Uint8Array(Buffer.from(vec.flag_commitment_hex, "hex"));
   const solverPk = Buffer.from(vec.solver_pubkey_hex, "hex");
@@ -234,7 +237,7 @@ test("(T1) SCB_VERDICT_V4: TS reconstruction == canonical vector, field by field
   // Field-by-field offsets derived from the tag length.
   let off = 0;
   assert.ok(msg.subarray(off, off + tag.length).equals(tag)); off += tag.length;
-  for (const f of [pda, Buffer.from(vec.env_blob_sha256_hex, "hex"), Buffer.from(vec.exploit_sha256_hex, "hex"), solverPk, Buffer.from(vec.flag_commitment_hex, "hex"), Buffer.from(vec.buyer_enc_pk_hex, "hex")]) {
+  for (const f of [pda, Buffer.from(vec.manifest_sha256_hex, "hex"), Buffer.from(vec.env_blob_sha256_hex, "hex"), Buffer.from(vec.exploit_sha256_hex, "hex"), solverPk, Buffer.from(vec.flag_commitment_hex, "hex"), Buffer.from(vec.buyer_enc_pk_hex, "hex")]) {
     assert.ok(msg.subarray(off, off + 32).equals(f)); off += 32;
   }
   assert.equal(msg[off], 1);
@@ -243,6 +246,7 @@ test("(T1) SCB_VERDICT_V4: TS reconstruction == canonical vector, field by field
 test("(T1b) buildVerdictMessage flips only the outcome byte between PASS/FAIL", () => {
   const f = {
     bountyPda: Buffer.alloc(32, 1),
+    manifestSha256: Buffer.alloc(32, 7),
     envBlobSha256: Buffer.alloc(32, 2),
     exploitSha256: Buffer.alloc(32, 3),
     solver: Buffer.alloc(32, 4),
@@ -252,8 +256,8 @@ test("(T1b) buildVerdictMessage flips only the outcome byte between PASS/FAIL", 
   };
   const pass = buildVerdictMessage({ ...f, outcome: true });
   const fail = buildVerdictMessage(f);
-  assert.deepEqual(pass.subarray(0, 206), fail.subarray(0, 206));
-  assert.equal(pass[206] - fail[206], 1);
+  assert.deepEqual(pass.subarray(0, 238), fail.subarray(0, 238));
+  assert.equal(pass[238] - fail[238], 1);
 });
 
 // ---------------------------------------------------------------------------
@@ -352,6 +356,7 @@ test("verifier receives the manifest hash read from the bounty account", async (
   const { bounty, job } = bountyFixture();
   let sent: Record<string, unknown> | undefined;
   const deps = depsWith({
+    connection: new Connection("http://127.0.0.1:8899"), // never contacted by callEnclave
     fetchImpl: async (_url, init) => {
       sent = JSON.parse(String(init?.body));
       return new Response(JSON.stringify({ outcome: false, sig: "synthetic", redacted_log: "" }), { status: 200 });

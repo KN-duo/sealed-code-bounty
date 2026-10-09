@@ -36,7 +36,7 @@ against the *failure* side first (connection refused → specific error + retry)
   awaiting-resolution shows the force-unlock countdown; resolved → decrypt-reveal modal
   (fetch `Reveal` PDA, inline-or-URL carrier with sha256 verification, sealed-box open
   in-browser, restore-key path) + reclaim rent via `close_resolved_bounty`.
-- **Submit console (`#/hunt/:pda`)** — connect gate → drop/paste exploit → sha256 → seal to
+- **Submit console (`#/hunt/:pda`)** — connect gate → upload ZIP → sha256 → seal to
   `Config.enclave_enc_pk` → ed25519 intent signature via wallet `signMessage`
   (`SCB_SUBMIT_V1 || bounty_pda || sha256(exploit)`) → `POST /internal/upload` →
   `submit_exploit` tx → poll on-chain status → PASS celebration / FAIL (bond refunded, slot
@@ -87,7 +87,7 @@ contained in `lib/anchorClient`. All 32-byte values render as monospace truncate
 | Wallet connect / signMessage / tx submit | **REASONED** | needs a human at a browser with Phantom; the rig airdrops to your wallet and seeds bounties so the walkthrough is a click-through, not a setup project |
 | seal_bounty / upload runner calls | **REASONED (against the real runner)** | `devrig/enclave.mjs` now serves both endpoints with the exact shapes `lib/runner.ts` sends, and its request/response contract is covered by `devrig/selftest.mjs` — but the real runner has never answered the browser (see gap 6) |
 | Sealed-box seal + open, X25519 keygen, sha256, intent msg | **EXECUTED (unit)** | libsodium + noble verified callable in node; `devrig/selftest.mjs` additionally round-trips BOTH hops (hunter→enclave, enclave→buyer) and asserts a wrong key returns null. A round-trip against a real on-chain Reveal is still REASONED |
-| SCB_VERDICT_V4 wire + operator attestation | **EXECUTED (unit)** | `devrig/selftest.mjs` asserts the 207-byte layout, the domain tag, PASS/FAIL differing only in the trailing byte, and raw-ed25519 signature verification |
+| SCB_VERDICT_V5 wire + operator attestation | **EXECUTED (unit)** | The 239-byte layout includes `manifest_sha256`; runner, relayer, and on-chain tests share the V5 vector and reject a mismatching manifest |
 | Browser render (React mount) | **REASONED** | no headless browser; build + node module-load of anchor/web3/libsodium succeeded, so a module-load crash is ruled out |
 
 Bottom line unchanged: the toolchain gates are executed and green; the on-chain and enclave

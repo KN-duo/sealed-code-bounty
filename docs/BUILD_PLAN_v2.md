@@ -63,7 +63,7 @@ flowchart TB
     end
 
     Buyer -->|"create_bounty():<br/>escrow SOL, pin manifest/env hashes,<br/>flag_commitment, buyer X25519 pub key"| Bounty
-    Hunter -->|"submit_exploit():<br/>upload exploit.py over HTTPS"| Enclave
+    Hunter -->|"submit_exploit():<br/>upload sealed exploit ZIP over HTTPS"| Enclave
     Hunter <-.->|"develop and debug<br/>against flag-stripped replica"| DevPlane
     Store -->|"env blob"| Pull
     Store -.->|"flag-stripped replicas"| DevPlane
@@ -162,7 +162,7 @@ Escrow stays as today: prize transferred into the PDA at creation; rent swept on
 - `bounty: Pubkey`, `solver: Pubkey`, `exploit_sha256: [u8; 32]`, `first_blood: bool`, `timestamp: i64`
 
 **`Reveal`** (PDA seed `["reveal", bounty]`, created only on PASS):
-- `ciphertext: Vec<u8>` ≤ 10_240 bytes (libsodium sealed box over the exploit script)
+- `ciphertext: Vec<u8>` ≤ 10_240 bytes (libsodium sealed box over the exploit ZIP)
 - If the sealed box exceeds the cap, store `ciphertext_url: String≤200` + `ciphertext_sha256` instead (object on R2 encrypted the same way).
 
 #### Instructions
@@ -252,7 +252,7 @@ HTTP API (bound to vsock/localhost only — never exposed publicly except throug
 
 **Upload handshake (integration contract — closes both the plaintext-at-proxy and metadata-spoofing seams):**
 1. Hunter's client fetches `Bounty` state via **its own RPC** (env hash, buyer pk, deadline).
-2. Client seals the exploit: `crypto_box_seal(exploit.py, Config.enclave_enc_pk)` — every intermediary (proxy, bucket, logs) sees only ciphertext (review P0-1/P1-7).
+2. Client seals the exploit ZIP bytes: `crypto_box_seal(exploit.zip, Config.enclave_enc_pk)` — every intermediary (proxy, bucket, logs) sees only ciphertext (review P0-1/P1-7).
 3. Client signs the intent `SCB_SUBMIT_V1 || bounty_pda || sha256(exploit_plaintext)` with the solver wallet and POSTS `{bounty_pda, claimed_chain_view, solver_pubkey, submit_intent_sig, exploit_sealed_box}`.
 4. Enclave, in order: verify `submit_intent_sig` against `solver_pubkey` (abort on failure — before any expensive work); open the sealed box; compare `claimed_chain_view.{env_blob_sha256, buyer_enc_pk}` against the relayer-supplied view and **abort on divergence** (never guess which is right — full account-data proofs are the phase-9 fix); recompute `sha256` of the unsealed plaintext.
 5. Enclave persists the blob + metadata and returns a receipt hash.
@@ -264,11 +264,11 @@ Pipeline inside `POST /internal/verify` (all steps in order; any failure ⇒ ver
 3. **Flag derivation (F1/F2)**: master secret `M` (32 B, see §4.4 key ceremony). `flag = base58(HKDF-SHA256(ikm=M, salt=bounty_pda, info=b"scb-flag-v1", L=32))`. Deterministic per bounty — no flag storage needed anywhere. `POST /internal/seal_bounty` computes `flag_commitment = sha256(flag)` at bounty-creation time; the buyer's create-flow calls it and puts the commitment on-chain. **Blast radius (review P0-3):** a leak of master secret `M` compromises every flag, past and future — hence KMS-conditioned delivery in §4.4 step 4 is mandatory in v1, not roadmap.
 4. Replace the placeholder string `{{FLAG}}` in `/flag` (and only there) inside the rootfs copy with the derived flag.
 5. Spawn target under **nsjail** from the rootfs: own mount/PID/IPC namespaces, `--time_limit` from manifest, RLIMIT_AS per manifest, **network namespace with no external route** (loopback only). Apply the manifest `determinism` block (D13: disable ASLR in the target namespace if requested). Start the service entrypoint (`tcp_service`) or prepare the binary (`binary`).
-6. Spawn the exploit in a second nsjail profile sharing the SAME network namespace as the target (so it can reach `target:1337` via loopback) but with cwd=`/work`: `python3 exploit.py` — the runtime image ships **python3 + pwntools** preinstalled. For a `binary` target the exploit drives the target over stdio instead of a socket. Capture combined stdout+stderr with a hard wall-clock cap.
+6. Safely unpack the bounded exploit ZIP into `/work`, then spawn its validated `python3` argument array in a second nsjail profile sharing the SAME network namespace as the target (so it can reach `target:1337` via loopback). The default entrypoint is a top-level `exploit.py`; a strict `scb-exploit.json` may select another extracted `.py` file. The runtime image ships **python3 + pwntools** preinstalled. For a `binary` target the exploit drives the target over stdio instead of a socket. Capture combined stdout+stderr with a hard wall-clock cap.
    - v1 simplification: target + exploit share one netns; the runner itself is outside that netns and reachable only via inherited stdio FDs. Hardening roadmap: separate netnses joined by an internal veth pair.
 7. **Single deterministic run (D13).** Run the exploit **exactly once**. `PASS = stdout.contains(flag)` (plain substring match) on that one run — no retries, no best-of-N in v1. Non-deterministic exploits are the hunter's responsibility; they can validate reliability locally against the placeholder replica (§4.5) before submitting. Redact every occurrence of the flag string and its hex/base64 encodings → `[REDACTED]` (D11). Persist redacted log for hunter feedback.
 8. Sign the 143-byte canonical `SCB_VERDICT_V2` message (§4.1), including `flag_commitment = sha256(flag)` for this bounty, with the enclave's ed25519 key.
-9. If PASS: `sealed = crypto_box seal(exploit_py, buyer_x25519_pk)` (libsodium sealed box; use the Rust `crypto_box` crate). Return `{outcome, sig, reveal_ciphertext, redacted_log}`.
+9. If PASS: `sealed = crypto_box seal(exploit ZIP, buyer_x25519_pk)` (libsodium sealed box; use the Rust `crypto_box` crate). Return `{outcome, sig, reveal_ciphertext, redacted_log}`.
 10. Zeroize flag material; drop the rootfs copy; nothing about a FAILED attempt persists beyond the redacted log (D3).
 
 Relayer-facing behavior: the relayer (parent side) polls the chain for `ExploitSubmitted` events, streams the job to the enclave, then composes the tx: `[Ed25519SigVerify(msg,sig)] ++ resolve_with_attestation(...)`.
@@ -319,7 +319,7 @@ Buyer flow:
 
 Hunter flow:
 1. Browse bounties (from indexer); download dev-plane compose files.
-2. Submit exploit: paste or upload `exploit.py` → HTTPS upload to enclave (via parent proxy) → wait for verdict → on FAIL show redacted log; on PASS celebrate receipt.
+2. Submit exploit ZIP → HTTPS upload to enclave (via parent proxy) → wait for verdict → on FAIL show redacted log; on PASS celebrate receipt.
 3. Profile page: receipts/leaderboard from indexer.
 
 IDL sync: after each `anchor build`, refresh `frontend/src/idl/*` from `target/idl` + `target/types` (existing workflow documented in `EXPLAIN.md`).

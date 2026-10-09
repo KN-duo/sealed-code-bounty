@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # ---------------------------------------------------------------------------
-# FULL REAL CYCLE on localnet: real Docker execution drives the on-chain payout.
+# LEGACY PROTOTYPE localnet cycle: JavaScript/Docker process drives local payout.
+# This is not Nitro and does not exercise the current Rust V5 runner.
 #
 # A company escrows a prize -> a hunter's exploit (sealed, unreadable) is
-# submitted -> the REAL enclave runs it in a hidden Docker sandbox against the
+# submitted -> a legacy host process runs it in a local Docker sandbox against the
 # target -> it captures the secret flag -> Solana pays the hunter and delivers
 # the exploit to the buyer, atomically.
 #
-# This reuses the proven chain plumbing (e2e/chain.mjs, cli/scb-submit, the
-# relayer) and swaps the mock judge for enclave-exec/enclave.cjs. The relayer
-# needs no changes: the enclave bakes in its own target, so it judges without
-# being told what to run.
+# This reuses local chain plumbing and swaps the mock judge for
+# enclave-exec/enclave.cjs. Development secrets are passed into that ordinary
+# host process. This is a legacy prototype check, not production evidence.
 #
 # Prereqs (on a Docker + Solana host, i.e. your Linux box):
 #   * the program built:   anchor build   (target/deploy/*.so present)
@@ -86,8 +86,8 @@ for name in buyer solver funder; do
 done
 echo "buyer=$BUYER_PUB solver=$SOLVER_PUB operator=$OPERATOR_PUB"
 
-# --- start the REAL enclave -------------------------------------------------
-say "start real-execution enclave"
+# --- start the legacy local process -----------------------------------------
+say "start legacy JavaScript/Docker verifier process (not Nitro/Rust)"
 SCB_MASTER_SECRET_HEX=$(openssl rand -hex 32) \
 SCB_ENCLAVE_ENC_SECRET_HEX=$(openssl rand -hex 32) \
 SCB_OPERATOR_KEYPAIR="$WORK/operator.json" \
@@ -98,7 +98,7 @@ PIDS+=("$!")
 for i in $(seq 1 30); do curl -s "http://127.0.0.1:$ENCLAVE_PORT/internal/healthz" >/dev/null 2>&1 && break; [ "$i" = 30 ] && die "enclave did not start ($ENC_LOG)"; sleep 0.3; done
 ENC_PK_HEX=$(curl -s "http://127.0.0.1:$ENCLAVE_PORT/internal/enclave-pubkey" | python3 -c "import json,sys; print(json.load(sys.stdin)['enclave_enc_pk'])")
 [ ${#ENC_PK_HEX} -eq 64 ] || die "bad enclave pubkey: $ENC_PK_HEX"
-echo "enclave up; enclave_enc_pk=$ENC_PK_HEX"
+echo "local verifier process up; dev enclave_enc_pk=$ENC_PK_HEX"
 
 # --- config + operator ------------------------------------------------------
 say "init-config + arm operator (with the enclave's real pubkey)"
@@ -122,7 +122,7 @@ node e2e/chain.mjs create-bounty "$WORK/buyer.json" "$CUR_ID" "$PRIZE_LAMPORTS" 
 echo "bounty $PDA_B58 created"
 
 # --- relayer pointed at the real enclave ------------------------------------
-say "start relayer -> real enclave"
+say "start relayer -> legacy local verifier process"
 RPC_URL="$RPC_URL" PROGRAM_ID="$PROGRAM_ID" FEE_PAYER_KEYPAIR_PATH="$WORK/funder.json" \
 OPERATOR_PUBKEY="$OPERATOR_PUB" ENCLAVE_URL="http://127.0.0.1:$ENCLAVE_PORT" POLL_INTERVAL_MS=800 \
 npm --prefix relayer run start >"$REL_LOG" 2>&1 &
@@ -134,10 +134,13 @@ sleep 2
 # works (the inline path capped it at ~400 bytes). Set SCB_REVEAL_STORE=inline to
 # force the inline path, in which case use enclave-exec/solve-compact.py instead.
 EXPLOIT_FILE="${SCB_EXPLOIT_FILE:-examples/ret2win/solution/solve.py}"
-say "submit exploit ($EXPLOIT_FILE, sealed & unreadable in transit)"
+EXPLOIT_ZIP="$WORK/exploit.zip"
+python3 -c 'import sys,zipfile; z=zipfile.ZipFile(sys.argv[2], "w", zipfile.ZIP_DEFLATED); z.write(sys.argv[1], "exploit.py"); z.close()' \
+  "$EXPLOIT_FILE" "$EXPLOIT_ZIP"
+say "submit exploit ($EXPLOIT_FILE packaged as ZIP, sealed & unreadable in transit)"
 SOLVER_BEFORE=$(node e2e/chain.mjs balance "$SOLVER_PUB" | python3 -c "import json,sys; print(json.load(sys.stdin)['lamports'])")
 SUBMIT_OUT=$(node cli/dist/scb-submit.js --rpc-url "$RPC_URL" --keypair "$WORK/solver.json" \
-  --bounty "$BUYER_PUB:$CUR_ID" --file "$EXPLOIT_FILE" \
+  --bounty "$BUYER_PUB:$CUR_ID" --file "$EXPLOIT_ZIP" \
   --program-id "$PROGRAM_ID" \
   --enclave-url "http://127.0.0.1:$ENCLAVE_PORT" --wait)
 echo "$SUBMIT_OUT" | head -3
@@ -154,7 +157,7 @@ if [ "$EXPECT_OUTCOME" = "FAIL" ]; then
   echo "ok: FAIL reopened slot, minted no Receipt, and revealed nothing"
 
   RESUB_OUT=$(node cli/dist/scb-submit.js --rpc-url "$RPC_URL" --keypair "$WORK/solver.json" \
-    --bounty "$BUYER_PUB:$CUR_ID" --file "$EXPLOIT_FILE" --program-id "$PROGRAM_ID" \
+    --bounty "$BUYER_PUB:$CUR_ID" --file "$EXPLOIT_ZIP" --program-id "$PROGRAM_ID" \
     --enclave-url "http://127.0.0.1:$ENCLAVE_PORT" --wait)
   echo "$RESUB_OUT" | grep -q '"status": *"FAIL"' || die "resubmission did not receive real FAIL: $RESUB_OUT"
   printf '\n\033[1;32mFULL REAL NEGATIVE CYCLE PASSED — FAIL cleanup and resubmission verified.\033[0m\n\n'

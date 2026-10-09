@@ -30,5 +30,6 @@ nc target 1337          # from inside the workspace container, or:
 docker compose exec workspace nc target 1337
 ```
 
-The dev replica carries the harmless `{{FLAG}}` placeholder; the real secret
-only ever exists inside the verification enclave (two-plane rule).
+The dev replica carries the harmless `{{FLAG}}` placeholder. No real enclave
+is deployed yet; the claim that production secrets stay inside a TEE is an
+architecture goal, not something this local example proves.

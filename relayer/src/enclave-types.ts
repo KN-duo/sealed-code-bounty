@@ -30,7 +30,7 @@ export interface VerifyRequest {
 
 export interface VerifyResponse {
   outcome: boolean;
-  /** base64 ed25519 signature over the canonical verdict wire (see test-vectors/verdict_v4.json). */
+  /** base64 ed25519 signature over the canonical verdict wire (see test-vectors/verdict_v5.json). */
   sig: string;
   /** base64 sealed-box ciphertext (PASS only; empty/absent on FAIL). */
   reveal_ciphertext?: string;

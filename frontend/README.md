@@ -1,10 +1,30 @@
 # SealedCodeBounty — frontend
 
-Companies post SOL bounties on vulnerable software. Hunters submit exploits that are
-sealed client-side (`crypto_box_seal`) before they ever leave the browser; an enclave
-verifier decides PASS/FAIL; on PASS the winner is paid from escrow, mints an on-chain
-Receipt, and the **buyer receives the exploit encrypted to their X25519 key** as an
-on-chain Reveal account.
+## Deployment status (2026-10-09)
+
+This is a local-development walkthrough, not a production deployment guide.
+There is no public website, deployed program, production RPC configuration,
+authenticated verifier API, or attested Nitro runner. `devrig/rig.mjs serve`
+is a mock that accepts/rejects by payload length; it does **not** execute the
+uploaded ZIP. Do not use it for real bounties or present a static build as a
+working TEE service.
+
+A future static-host build must explicitly set `VITE_CLUSTER`, `VITE_PROGRAM_ID`,
+`VITE_RPC_URL`, and `VITE_ENCLAVE_URL`; `npm run build:deploy` now blocks
+missing/localnet/loopback or malformed settings. This is only a configuration
+shape check, not proof the selected chain, API, or TEE is live. The site must
+also route browser-facing verifier requests through authenticated HTTPS to the
+real service. The Vite dev proxy is development-only. Mainnet additionally
+requires the independent review and launch gates in
+[`../DEPLOYMENT-HANDOFF.md`](../DEPLOYMENT-HANDOFF.md). See
+[`../docs/hosting-readiness.md`](../docs/hosting-readiness.md) for the free-static
+hosting option and the $2/month constraints.
+
+The intended flow lets companies post SOL bounties on authorized vulnerable
+software and hunters seal exploits client-side (`crypto_box_seal`). A verifier
+then judges PASS/FAIL; on PASS, escrow pays the winner and an on-chain Reveal
+delivers the exploit encrypted to the buyer's X25519 key. The verifier is not
+currently attested or deployed; see the deployment status above.
 
 React 19 + Vite + TS + `@solana/wallet-adapter` + `@anchor-lang/core`. Architecture and
 honesty table: [`../docs/frontend-report.md`](../docs/frontend-report.md). Rig internals
@@ -80,8 +100,9 @@ node devrig/rig.mjs seed --wallet <the-pubkey-you-copied>
 node devrig/rig.mjs serve
 ```
 
-**Correct output:** `mock enclave listening on http://127.0.0.1:8443` and
-`verdict rule PASS unless the exploit matches /broken/i or is under 20 bytes`.
+**Correct output:** `mock enclave listening on http://127.0.0.1:8443` and a rule
+that says it passes payloads at least 20 bytes long. The mock does not execute
+exploit archives.
 Leave it running — it is also the relayer that lands verdicts on-chain, and it
 logs every `upload` / `verdict` / `resolved` line there.
 
@@ -119,8 +140,19 @@ The program has no buyer≠solver rule, so one wallet plays both sides.
 
 1. Copy your bounty address (click the hash badge on the done screen), then
    visit `http://localhost:5173/#/hunt/<that-address>`.
-2. Drop `../examples/ret2win/solution/solve.py` into the exploit box (any text
-   file ≥ 20 bytes that doesn't contain the word "broken" works).
+2. Create a ZIP with a top-level `exploit.py` and drop it into the exploit box.
+   From `frontend/`, this PowerShell snippet packages the example:
+
+   ```powershell
+   $pkg = Join-Path $env:TEMP ("scb-exploit-" + [guid]::NewGuid())
+   New-Item -ItemType Directory -Path $pkg | Out-Null
+   Copy-Item ..\examples\ret2win\solution\solve.py (Join-Path $pkg "exploit.py")
+   Compress-Archive -Path (Join-Path $pkg "*") -DestinationPath .\exploit.zip -Force
+   Remove-Item -LiteralPath $pkg -Recurse -Force
+   ```
+
+   The demo mock does not unpack or execute the script, so this walkthrough
+   proves browser/chain wiring, not real judging.
 3. Click **Seal, sign & submit**; approve **two** Phantom prompts — a message
    signature (the intent proof) and the transaction (which posts a 0.05 SOL bond).
 4. **Correct output:** the activity log walks `sha256(exploit)` → `sealed box` →
@@ -143,7 +175,7 @@ throws them away. That is exactly the situation the restore path exists for.
 3. Drop the `scb-buyer-key-XXXXXXXX.json` from step 6. **Correct output:**
    `Key restored · ab12cd…` (the first chars of your key's public half).
 4. Click **Decrypt now**. **Correct output:** green “Decrypted successfully.” and
-   the exploit plaintext — byte-for-byte the contents of `solve.py`. The
+   the exploit ZIP — byte-for-byte the archive you submitted. The
    **Download exploit** button saves it.
 
 (Skip step 8's tab-close and the modal decrypts immediately — same code path,
@@ -205,3 +237,32 @@ the on-chain `blob_url` field. This opaque receipt identifies the encrypted
 upload record; the plaintext exploit hash remains a separate commitment. The
 development rig uses a loopback-only, in-memory mock and loses uploads on
 restart. It does not demonstrate durable storage, real execution, or a TEE.
+
+## Production hosting checklist
+
+Run `npm run test:deploy` to test the production configuration guard. Static
+host builds should use `npm run build:deploy` (not bare `npm run build`); it
+requires explicit `VITE_CLUSTER=devnet|mainnet`, a valid `VITE_PROGRAM_ID`, an
+HTTPS public `VITE_RPC_URL`, and an explicit `VITE_ENCLAVE_URL` (same-origin
+path such as `/enclave` or a public HTTPS URL). The guard validates input shape
+only; it cannot confirm the cluster/program match or that either service is
+reachable. Every `VITE_*` value is public browser-bundle data.
+
+The current Vite app expects a same-origin reverse proxy at `/enclave`; merely
+uploading `dist/` to a static host leaves posting and submissions unavailable.
+Before hosting a usable public app, provide and verify all of the following:
+
+- An explicit production `VITE_CLUSTER`, `VITE_PROGRAM_ID`, and HTTPS
+  `VITE_RPC_URL` that point to the same already-deployed Solana cluster.
+- An authenticated HTTPS API/reverse proxy for the runner, with client
+  authentication, rate limiting, and proxy-aware IP limits. Do not trust raw
+  forwarded-IP headers.
+- A fresh, independently verified enclave attestation before the browser trusts
+  verifier encryption/signing keys.
+- Hosting security headers and immutable-asset/short-`index.html` cache policy.
+- For mainnet: independent security review, multisig/authority checks, key
+  rotation and incident procedures, and a capped canary.
+
+Cloudflare Pages Free is the current budget-compatible static-host candidate,
+not a selected or deployed provider. The frontend can be built without external
+services, but publishing it now would not produce a working or safe CTF service.

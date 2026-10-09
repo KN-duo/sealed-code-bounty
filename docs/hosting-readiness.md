@@ -5,7 +5,8 @@ website that works from other computers, AWS TEE execution for authorized CTF
 challenges, fewer than ten concurrent users, and a **$2/month maximum**. There
 is no requirement to buy a VPS or keep the website on AWS.
 
-The application is not deployed. The previously generated AWS staging plan is
+The application is not deployed: there is no public website/API, devnet or
+mainnet program, or AWS resource. The previously generated AWS staging plan is
 not suitable for this monthly budget. No resources were created for this review.
 
 ## Current behavior
@@ -51,6 +52,20 @@ test. No throughput, high availability, or TEE confidentiality claim follows.
    operations publicly; keep `/internal/verify` private to the relayer. End each
    session by terminating compute and deleting its root volume. Keep durable
    ciphertext and keys independently of ephemeral compute.
+
+When the API/chain gates are actually ready, the static Pages project settings
+are: root directory `frontend`, build command `npm ci && npm run build:deploy`,
+output directory `dist`. The frontend provides `npm run test:deploy` and a
+production build guard. It requires build-time `VITE_CLUSTER` to be `devnet` or
+`mainnet`, a valid `VITE_PROGRAM_ID`, an HTTPS `VITE_RPC_URL`, and an explicit
+`VITE_ENCLAVE_URL` (same-origin route or HTTPS service URL). Those values still
+need to correspond to the same deployed cluster/program, and `/enclave` must
+route to the authenticated verifier API. The preflight validates configuration
+shape only; it does not verify chain identity or service health. Vite build
+variables are public browser config; never put RPC secrets, wallet keys, KMS
+material, or bearer credentials in a `VITE_*` variable. These settings are
+preparation only—do not publish the current build as an operational bounty
+site while `/enclave` and the chain deployment are missing.
 
 The website can stay online between sessions, while execution is unavailable.
 Automatic wake-up would require additional orchestration, an enforced monthly
@@ -101,18 +116,20 @@ have not been compared; they are candidates, not a verified cheaper deployment.
 - Required `solver_pubkey` on Rust verify requests, as already supplied by the
   relayer, and corrected the wire documentation to call the hash plaintext SHA-256.
 
-Verification: all 46 runner tests passed (23 library, 13 API, 4 blob, 6 Docker
-shim); Clippy with warnings denied and the runner build passed. New regressions
-cover competing uploads, hash substitution, retry accounting, and a slow
-verification with concurrent health requests. A real local binary boot and ten
-parallel health requests passed using the stub sandbox. This proves API startup
-and responsiveness only; no real enclave or ten-job workload was tested.
+Verification has advanced since the initial concurrency review: the latest
+recorded runner suite passed 72 tests and Clippy with warnings denied; relayer
+and CLI each passed 12 tests; Anchor passed 29 localnet tests; frontend lint and
+build passed. A real local binary boot and ten parallel health requests passed
+using the stub sandbox. These checks prove local API behavior only; no real
+Docker V5 run, enclave, or ten-job workload was tested. Docker, Nitro CLI,
+Terraform, and AWS CLI are absent from the current machine.
 
-Remaining release gates include manifest/environment verification, safe ZIP
-handling, public HTTPS routing and authenticated API access, proxy-aware limits,
-real sandbox/attestation/KMS, and an end-to-end devnet run from two independent
-browsers. Real clients/mainnet still require the independent review in
-`DEPLOYMENT-HANDOFF.md`.
+Manifest/environment verification, V5 manifest binding, and bounded exploit
+ZIP handling are implemented and locally tested. Remaining gates include
+public HTTPS/authenticated API routing, production cluster configuration,
+proxy-aware limits, Docker-backed V5 execution, enclave-native sandbox,
+attestation/KMS, two-browser devnet flow, independent review, and an approved
+mainnet canary. See `DEPLOYMENT-HANDOFF.md` for the sequence.
 
 ## Sources checked
 
@@ -120,6 +137,8 @@ browsers. Real clients/mainnet still require the independent review in
 - [AWS KMS pricing](https://aws.amazon.com/kms/pricing/)
 - [AWS Nitro Enclaves requirements](https://docs.aws.amazon.com/enclaves/latest/user/nitro-enclave.html)
 - [Cloudflare Pages pricing](https://developers.cloudflare.com/pages/functions/pricing/)
+- [Cloudflare Pages Git integration](https://developers.cloudflare.com/pages/get-started/git-integration/)
+- [Cloudflare Pages build configuration](https://developers.cloudflare.com/pages/configuration/build-configuration/)
 - [CloudFront free flat-rate plan](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/flat-rate-pricing-plan.html)
 
 CloudFront Free is an alternative, subject to account eligibility and separately

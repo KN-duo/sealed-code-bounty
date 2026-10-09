@@ -114,16 +114,17 @@ fn upload_fixture(bounty: &str) -> UploadFixture {
 
 fn upload_fixture_with_plaintext(bounty: &str, plaintext: &[u8]) -> UploadFixture {
     use crypto_box::PublicKey;
+    let plaintext = exploit_zip(plaintext);
     let solver = ed25519_dalek::SigningKey::generate(&mut rand::rngs::OsRng {});
     let enc_secret_bytes: [u8; 32] = hex::decode(ENC_SECRET_HEX).unwrap().try_into().unwrap();
     // NOTE: derive the public half from the secret — PublicKey::from(raw)
     // would interpret the bytes differently than the scalar does.
     let enc_pk = crypto_box::SecretKey::from(enc_secret_bytes).public_key();
 
-    let sealed = PublicKey::seal(&enc_pk, &mut rand::rngs::OsRng {}, plaintext).unwrap();
+    let sealed = PublicKey::seal(&enc_pk, &mut rand::rngs::OsRng {}, &plaintext).unwrap();
 
     let mut h = sha2::Sha256::new();
-    h.update(plaintext);
+    h.update(&plaintext);
     let phash: [u8; 32] = h.finalize().into();
 
     let pda_bytes: [u8; 32] = bs58::decode(bounty)
@@ -149,6 +150,16 @@ fn upload_fixture_with_plaintext(bounty: &str, plaintext: &[u8]) -> UploadFixtur
             "exploit_sealed_box": base64::engine::general_purpose::STANDARD.encode(sealed),
         }),
     }
+}
+
+fn exploit_zip(script: &[u8]) -> Vec<u8> {
+    use std::io::{Cursor, Write};
+    let mut archive = zip::ZipWriter::new(Cursor::new(Vec::new()));
+    archive
+        .start_file("exploit.py", zip::write::SimpleFileOptions::default())
+        .unwrap();
+    archive.write_all(script).unwrap();
+    archive.finish().unwrap().into_inner()
 }
 
 // ---------------------------------------------------------------------------
@@ -192,6 +203,19 @@ async fn upload_happy_path_returns_receipt() {
     let (status, v) = post_json(&mut app, "/internal/upload", fx.body.clone()).await;
     assert_eq!(status, StatusCode::CREATED, "{v}");
     assert!(v["receipt"].is_string(), "{v}");
+}
+
+#[tokio::test]
+async fn oversized_exploit_zip_is_rejected_before_storage() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let (mut app, _state) = make_app(tmp.path(), &[]);
+    let mut entropy = vec![0u8; 16 * 1024];
+    rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut entropy);
+    let fixture = upload_fixture_with_plaintext(BOUNTY_PDA_B58, &entropy);
+
+    let (status, body) = post_json(&mut app, "/internal/upload", fixture.body).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+    assert_eq!(stored_object_count(tmp.path()), 0);
 }
 
 #[tokio::test]
@@ -274,7 +298,8 @@ async fn verify_without_upload_is_404() {
                 "buyer_enc_pk": "09".repeat(32),
                 "flag_commitment": FLAG_COMMITMENT_HEX,
                 "exploit_sha256": hex::encode([3u8;32]),
-            }
+            },
+            "manifest_sha256": "08".repeat(32),
         }),
     )
     .await;
@@ -298,6 +323,7 @@ async fn verify_divergent_chain_view_is_409() {
             "solver_pubkey": fx.body["solver_pubkey"],
             "submission_receipt": uploaded["receipt"],
             "claimed_chain_view": claimed,
+            "manifest_sha256": "08".repeat(32),
         }),
     )
     .await;
@@ -320,6 +346,7 @@ async fn verify_with_stub_sandbox_is_typed_501() {
             "solver_pubkey": fx.body["solver_pubkey"],
             "submission_receipt": uploaded["receipt"],
             "claimed_chain_view": fx.body["claimed_chain_view"].clone(),
+            "manifest_sha256": "08".repeat(32),
         }),
     )
     .await;
@@ -333,6 +360,7 @@ fn verify_fixture(fx: &UploadFixture, receipt: &str) -> Value {
         "solver_pubkey": fx.body["solver_pubkey"],
         "submission_receipt": receipt,
         "claimed_chain_view": fx.body["claimed_chain_view"],
+        "manifest_sha256": "08".repeat(32),
     })
 }
 
@@ -422,7 +450,9 @@ async fn artifact_path_checks_both_hashes_and_uses_manifest_execution_limits() {
         assert_eq!(status, StatusCode::CREATED);
         let mut verify = verify_fixture(&fx, uploaded["receipt"].as_str().unwrap());
         // Missing manifest hash must not fall back to a parent-selected image.
-        let (status, _) = post_json(&mut app, "/internal/verify", verify.clone()).await;
+        let mut missing = verify.clone();
+        missing.as_object_mut().unwrap().remove("manifest_sha256");
+        let (status, _) = post_json(&mut app, "/internal/verify", missing).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         verify["manifest_sha256"] = json!(manifest_hash);
         for (key, value) in [

@@ -129,6 +129,7 @@ pub async fn seal_bounty(
 }
 
 const MAX_SEALED_BOX_BYTES: usize = 256 * 1024;
+const MAX_EXPLOIT_ZIP_BYTES: usize = 9_000;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn upload(
@@ -173,6 +174,11 @@ pub async fn upload(
             ApiError::BadRequest("exploit_sealed_box does not decrypt under the enclave key".into())
         },
     )?);
+    if plaintext.len() > MAX_EXPLOIT_ZIP_BYTES {
+        return Err(ApiError::PayloadTooLarge(format!(
+            "exploit ZIP exceeds {MAX_EXPLOIT_ZIP_BYTES} bytes"
+        )));
+    }
     let plaintext_sha256: [u8; 32] = sha2::Sha256::digest(&*plaintext).into();
     intent::verify_intent(
         &pda,
@@ -290,6 +296,19 @@ pub async fn verify(
     // side is right (review R1 seam).
     let uploaded = &stored.claimed_chain_view;
     let claimed = &req.claimed_chain_view;
+    let manifest_hash = req
+        .manifest_sha256
+        .as_deref()
+        .filter(|h| valid_receipt(h))
+        .ok_or_else(|| {
+            ApiError::BadRequest(
+                "manifest_sha256 is required as 64 lowercase hex characters".into(),
+            )
+        })?;
+    let manifest_sha256: [u8; 32] = hex::decode(manifest_hash)
+        .map_err(|_| ApiError::BadRequest("manifest_sha256 must be hex".into()))?
+        .try_into()
+        .map_err(|_| ApiError::BadRequest("manifest_sha256 must be 32 bytes".into()))?;
     let differs = uploaded.env_blob_sha256 != claimed.env_blob_sha256
         || uploaded.buyer_enc_pk != claimed.buyer_enc_pk
         || uploaded.flag_commitment != claimed.flag_commitment
@@ -338,6 +357,11 @@ pub async fn verify(
                 ApiError::Conflict("stored encrypted submission cannot be opened".into())
             })?,
     );
+    if plaintext.len() > MAX_EXPLOIT_ZIP_BYTES {
+        return Err(ApiError::PayloadTooLarge(format!(
+            "exploit ZIP exceeds {MAX_EXPLOIT_ZIP_BYTES} bytes"
+        )));
+    }
     let plaintext_sha256: [u8; 32] = sha2::Sha256::digest(&*plaintext).into();
     if hex::encode(plaintext_sha256) != claimed.exploit_sha256.to_ascii_lowercase() {
         return Err(ApiError::Conflict(
@@ -358,17 +382,10 @@ pub async fn verify(
         .config()
         .work_dir
         .join(format!("rootfs-{receipt_hex}"));
-    let work_dir = state.config().work_dir.join(format!("work-{receipt_hex}"));
     let mut environment = None;
     let mut manifest = None;
     if let Some(source) = &state.config().artifact_source {
-        let hash = req
-            .manifest_sha256
-            .as_deref()
-            .filter(|h| valid_receipt(h))
-            .ok_or_else(|| {
-                ApiError::BadRequest("manifest_sha256 is required for artifact retrieval".into())
-            })?;
+        let hash = manifest_hash;
         std::fs::create_dir_all(&state.config().work_dir)
             .map_err(|_| ApiError::Internal("could not prepare artifact directory".into()))?;
         let staged = crate::artifacts::fetch(
@@ -407,10 +424,19 @@ pub async fn verify(
         Some(crate::manifest::Target::TcpService { port, .. }) => *port,
         _ => req.target_port.unwrap_or(1337),
     };
+    std::fs::create_dir_all(&state.config().work_dir)
+        .map_err(|_| ApiError::Internal("could not prepare exploit workspace".into()))?;
+    let zip_limits = crate::unpack::ExploitZipLimits::default();
+    let mut exploit_workspace =
+        crate::unpack::ExploitWorkspace::new(&state.config().work_dir, zip_limits.max_total_bytes)
+            .map_err(|_| ApiError::Internal("could not create exploit workspace".into()))?;
+    let unpacked = exploit_workspace
+        .unpack_zip(&plaintext, &zip_limits)
+        .map_err(|e| ApiError::BadRequest(format!("exploit ZIP rejected: {e}")))?;
     let run_params = RunParams {
         rootfs_dir: &rootfs_dir,
-        work_dir: &work_dir,
-        exploit_py: &plaintext,
+        work_dir: exploit_workspace.path(),
+        exploit_entrypoint: &unpacked.entrypoint,
         env_blob_path,
         target_image: req.target_image.clone(),
         target_entrypoint: manifest
@@ -439,7 +465,7 @@ pub async fn verify(
             )))
         }
         Err(SandboxError::Timeout) => {
-            let mut resp = fail_response(&state, &cv_bytes, &solver_bytes, &pda);
+            let mut resp = fail_response(&state, &cv_bytes, &manifest_sha256, &solver_bytes, &pda);
             resp.redacted_log = "execution timed out".to_string();
             Ok(Json(resp))
         }
@@ -464,14 +490,22 @@ pub async fn verify(
                 let ct_sha = sha2::Sha256::digest(&ct);
                 VerifyResponse {
                     outcome: true,
-                    sig: sign_verdict_b64(&state, &cv_bytes, &solver_bytes, &pda, true),
+                    sig: sign_verdict_b64(
+                        &state,
+                        &cv_bytes,
+                        &manifest_sha256,
+                        &solver_bytes,
+                        &pda,
+                        true,
+                    ),
                     reveal_ciphertext: Some(base64::engine::general_purpose::STANDARD.encode(ct)),
                     reveal_ciphertext_url: None,
                     reveal_ciphertext_sha256: Some(hex::encode(ct_sha)),
                     redacted_log: safe_log.to_string(),
                 }
             } else {
-                let mut resp = fail_response(&state, &cv_bytes, &solver_bytes, &pda);
+                let mut resp =
+                    fail_response(&state, &cv_bytes, &manifest_sha256, &solver_bytes, &pda);
                 resp.redacted_log = safe_log.to_string();
                 return Ok(Json(resp));
             };
@@ -485,6 +519,7 @@ pub async fn verify(
 fn sign_verdict_b64(
     state: &AppState,
     cv: &crate::state::ChainViewBytes,
+    manifest_sha256: &[u8; 32],
     solver: &[u8; 32],
     bounty_pda: &[u8; 32],
     outcome: bool,
@@ -493,6 +528,7 @@ fn sign_verdict_b64(
         state.verdict_key(),
         &crate::verdict::VerdictFields {
             bounty_pda,
+            manifest_sha256,
             env_blob_sha256: &cv.env_blob_sha256,
             exploit_sha256: &cv.exploit_sha256,
             solver,
@@ -507,12 +543,13 @@ fn sign_verdict_b64(
 fn fail_response(
     state: &AppState,
     cv: &crate::state::ChainViewBytes,
+    manifest_sha256: &[u8; 32],
     solver: &[u8; 32],
     bounty_pda: &[u8; 32],
 ) -> VerifyResponse {
     VerifyResponse {
         outcome: false,
-        sig: sign_verdict_b64(state, cv, solver, bounty_pda, false),
+        sig: sign_verdict_b64(state, cv, manifest_sha256, solver, bounty_pda, false),
         reveal_ciphertext: None,
         reveal_ciphertext_url: None,
         reveal_ciphertext_sha256: None,

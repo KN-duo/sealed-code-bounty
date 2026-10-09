@@ -28,7 +28,7 @@ async function generate() {
   };
   return {
     _comment: "DEV-ONLY rig keys. Never reuse on devnet or mainnet. Gitignored.",
-    operator: signer(), // signs SCB_VERDICT_V4 attestations
+    operator: signer(), // signs SCB_VERDICT_V5 attestations
     relayer: signer(), // lands resolve_with_attestation, pays reveal/receipt rent
     buyer: signer(), // posts the pre-seeded demo bounties
     enclaveEnc: box(), // hunters seal exploits to this pk (Config.enclave_enc_pk)

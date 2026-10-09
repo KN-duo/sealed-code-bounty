@@ -1,5 +1,11 @@
 # scb-relayer
 
+Pre-production status (2026-10-09): local tests pass (12), including verdict
+wire verification and retry/recovery paths, but no hosted relayer or devnet/
+mainnet deployment exists. The service requires a private fee-payer key and a
+real verifier endpoint; do not expose it with the sample local settings below.
+Current deployment gates are in [`../DEPLOYMENT-HANDOFF.md`](../DEPLOYMENT-HANDOFF.md).
+
 Permissionless relayer (`docs/BUILD_PLAN_v2.md` §4.6): watches
 `ExploitSubmitted` events, drives the verifier enclave's `/internal/verify`,
 and lands the atomic `[Ed25519SigVerify, resolve_with_attestation]`
@@ -25,6 +31,9 @@ every verdict is re-verified locally against it before fees are spent.
 ## Behavior notes
 
 - Jobs dedupe by Bounty PDA; one submission slot = one job.
+- Pending jobs are reconstructed from on-chain state at startup and periodic
+  scans; retry/backoff bookkeeping is in memory and resets when the process
+  restarts.
 - Enclave transport retries 5x with exponential backoff; on exhaustion the
   job is left for `force_unlock_submission`. A local FAIL is never invented.
 - Verdict bytes are reconstructed from CHAIN state and the signature checked

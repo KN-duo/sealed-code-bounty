@@ -1,5 +1,11 @@
 # Nitro transport
 
+Status (2026-10-09): these are protocol/storage-broker prototypes with offline
+tests, not a running enclave. `nitro-cli` is absent on the current machine;
+there is no EIF, attestation endpoint/verifier, KMS secret-release proof, or
+enclave-native execution sandbox. Do not claim hardware isolation from these
+tests. See [`../DEPLOYMENT-HANDOFF.md`](../DEPLOYMENT-HANDOFF.md).
+
 This directory contains the narrow parent/enclave transport. The parent proxy
 binds to loopback and forwards only the six verifier endpoints over AF_VSOCK.
 Frames are four-byte big-endian lengths followed by UTF-8 JSON, capped at 8 MiB.

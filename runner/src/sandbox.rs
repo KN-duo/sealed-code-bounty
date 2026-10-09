@@ -24,9 +24,10 @@ use std::time::Duration;
 pub struct RunParams<'a> {
     /// Directory holding the unpacked environment rootfs copy (mounted ro).
     pub rootfs_dir: &'a Path,
-    /// Work dir staged with the hunter's exploit at `exploit.py` (/work rw).
+    /// Private directory containing the safely unpacked exploit (/work ro).
     pub work_dir: &'a Path,
-    pub exploit_py: &'a [u8],
+    /// Validated argument array, e.g. ["python3", "exploit.py"].
+    pub exploit_entrypoint: &'a [String],
     /// Packed environment tarball (docker save | gzip) — loaded to
     /// materialise the target image.
     pub env_blob_path: Option<&'a Path>,
@@ -143,12 +144,7 @@ pub fn net_create_args(network: &str) -> Vec<String> {
 }
 
 /// Detached target-container argv (everything after `docker run`).
-pub fn target_run_args(
-    name: &str,
-    image: &str,
-    p: &RunParams<'_>,
-    machine: &str,
-) -> Vec<String> {
+pub fn target_run_args(name: &str, image: &str, p: &RunParams<'_>, machine: &str) -> Vec<String> {
     let memory = format!("{}m", p.memory_mb);
     let cpus = format!("{}", p.cpus);
     let seed = p.seed.to_string();
@@ -178,11 +174,11 @@ pub fn target_run_args(
 }
 
 /// Exploit-container argv (everything after `docker run`).
-pub fn exploit_run_args(p: &RunParams<'_>, machine: &str) -> Vec<String> {
+pub fn exploit_run_args(p: &RunParams<'_>, machine: &str, runtime_image: &str) -> Vec<String> {
     let memory = format!("{}m", p.memory_mb);
     let cpus = format!("{}", p.cpus);
     let seed = p.seed.to_string();
-    let mut tail: Vec<String> = vec!["python3".into(), "exploit.py".into()];
+    let mut tail = p.exploit_entrypoint.to_vec();
     if p.aslr_off {
         tail = ["setarch".into(), machine.into(), "-R".into()]
             .into_iter()
@@ -205,10 +201,11 @@ pub fn exploit_run_args(p: &RunParams<'_>, machine: &str) -> Vec<String> {
         "-v".into(),
         format!("{}:/srv:ro", p.rootfs_dir.display()),
         "-v".into(),
-        format!("{}:/work", p.work_dir.display()),
+        format!("{}:/work:ro", p.work_dir.display()),
         "-w".into(),
         "/work".into(),
     ];
+    args.push(runtime_image.to_string());
     args.extend(tail);
     args
 }
@@ -280,11 +277,6 @@ impl SandboxExecutor for DockerCli {
         let exploit_name = format!("scb-exploit-{uniq}");
         let machine = machine_of("amd64"); // host-arch assumption documented
 
-        // Stage the hunter's exploit into the mounted work dir.
-        tokio::fs::write(p.work_dir.join("exploit.py"), p.exploit_py)
-            .await
-            .map_err(SandboxError::Io)?;
-
         // 1. Loopback-only fabric (audit M3). Ignore "already exists".
         let net = net_create_args(&self.network);
         let _ = self.run_capture(&net, Duration::from_secs(15)).await;
@@ -309,9 +301,7 @@ impl SandboxExecutor for DockerCli {
                 text.lines()
                     .find_map(|l| l.strip_prefix("Loaded image: ").map(str::to_string))
                     .ok_or_else(|| {
-                        SandboxError::Runtime(
-                            "docker load did not report an image ref".into(),
-                        )
+                        SandboxError::Runtime("docker load did not report an image ref".into())
                     })?
             }
             (None, Some(img)) => img.clone(),
@@ -330,14 +320,12 @@ impl SandboxExecutor for DockerCli {
         // 4. Exploit container with hard wall-clock timeout. kill_on_drop is
         //    the belt; explicit start_kill+reap below is the suspenders
         //    (audit P1-2: timed-out runs must not leak containers).
-        let e_args_full: Vec<String> = std::iter::once("run".to_string())
-            .chain(exploit_run_args(p, machine))
-            .collect();
+        let exploit_args = exploit_run_args(p, machine, &self.runtime_image);
         let mut cmd = tokio::process::Command::new(&self.docker);
         cmd.arg("run")
             .arg("--name")
             .arg(&exploit_name)
-            .args(&e_args_full)
+            .args(&exploit_args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .kill_on_drop(true);
@@ -349,8 +337,7 @@ impl SandboxExecutor for DockerCli {
             }
         };
 
-        let waited =
-            tokio::time::timeout(Duration::from_secs(p.timeout_secs), child.wait()).await;
+        let waited = tokio::time::timeout(Duration::from_secs(p.timeout_secs), child.wait()).await;
 
         let (timed_out, _status) = match waited {
             Err(_) => {
@@ -379,6 +366,9 @@ impl SandboxExecutor for DockerCli {
         if let Some(o) = &out {
             text.push_str(&String::from_utf8_lossy(&o.stderr));
         }
-        Ok(ExecOutcome { output: text, timed_out })
+        Ok(ExecOutcome {
+            output: text,
+            timed_out,
+        })
     }
 }

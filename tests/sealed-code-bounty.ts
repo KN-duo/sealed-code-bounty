@@ -14,8 +14,8 @@ import * as path from "path";
  *   config bootstrap + operator rotation bounds
  *   create_bounty escrow economics
  *   submit_exploit bond + slot serialization + deadline guard
- *   resolve_with_attestation PASS (real SCB_VERDICT_V4 bytes, real ed25519
- *     signature over the exact 207-byte wire, native Ed25519SigVerify
+ *   resolve_with_attestation PASS (real SCB_VERDICT_V5 bytes, real ed25519
+ *     signature over the exact 239-byte wire, native Ed25519SigVerify
  *     instruction composed atomically with the resolution) and FAIL
  *   verdict-binding negatives (exploit/env/flag/operator/missing-ix)
  *   force_unlock_submission (too-early reject + delayed unlock)
@@ -28,8 +28,8 @@ const ED25519_PROGRAM_ID = new anchor.web3.PublicKey(
 const INSTRUCTIONS_SYSVAR_ID = new anchor.web3.PublicKey(
   "Sysvar1nstructions1111111111111111111111111"
 );
-const VERDICT_TAG = Buffer.from("SCB_VERDICT_V4", "ascii");
-const VERDICT_MSG_LEN = 207;
+const VERDICT_TAG = Buffer.from("SCB_VERDICT_V5", "ascii");
+const VERDICT_MSG_LEN = 239;
 const BUYER_ENC_PK = Buffer.alloc(32, 9);
 
 const PRIZE_LAMPORTS = 1 * anchor.web3.LAMPORTS_PER_SOL;
@@ -239,18 +239,20 @@ describe("sealed-code-bounty v2", () => {
       .rpc();
   }
 
-  /** Canonical SCB_VERDICT_V4 wire — must mirror constants.rs exactly. */
+  /** Canonical SCB_VERDICT_V5 wire — must mirror constants.rs exactly. */
   function buildVerdictMessage(
     bountyKey: anchor.web3.PublicKey,
     envHash: Buffer,
     exploitHash: Buffer,
     solverPk: Buffer,
     flagCommitment: Buffer,
-    outcome: boolean
+    outcome: boolean,
+    manifestHash: Buffer = MANIFEST_HASH
   ) {
     return Buffer.concat([
       VERDICT_TAG,
       bountyKey.toBuffer(),
+      manifestHash,
       envHash,
       exploitHash,
       solverPk,
@@ -265,6 +267,7 @@ describe("sealed-code-bounty v2", () => {
     outcome: boolean;
     operatorKp?: anchor.web3.Keypair;
     envHash?: Buffer;
+    manifestHash?: Buffer;
     exploitHash?: Buffer;
     flagCommitment?: Buffer;
     ciphertext?: Buffer;
@@ -283,6 +286,7 @@ describe("sealed-code-bounty v2", () => {
       outcome,
       operatorKp = operator,
       envHash = ENV_HASH,
+      manifestHash = MANIFEST_HASH,
       exploitHash = EXPLOIT_HASH,
       flagCommitment = FLAG_COMMITMENT,
       ciphertext = CIPHERTEXT,
@@ -298,7 +302,8 @@ describe("sealed-code-bounty v2", () => {
       exploitHash,
       solver.publicKey.toBuffer(),
       flagCommitment,
-      outcome
+      outcome,
+      manifestHash
     );
     assert.equal(message.length, VERDICT_MSG_LEN);
 
@@ -596,7 +601,16 @@ describe("sealed-code-bounty v2", () => {
     );
   });
 
-  it("(5d) non-operator signer fails", async () => {
+  it("(5d) verdict binding wrong manifest_sha256 fails", async () => {
+    const id = await pendingBounty();
+    const bad = Buffer.alloc(32, 96);
+    await expectError(
+      resolve({ bountyId: id, outcome: true, manifestHash: bad }),
+      "MissingSigVerify"
+    );
+  });
+
+  it("(5e) non-operator signer fails", async () => {
     const id = await pendingBounty();
     const impostor = anchor.web3.Keypair.generate();
     await expectError(
@@ -605,7 +619,7 @@ describe("sealed-code-bounty v2", () => {
     );
   });
 
-  it("(5e) missing Ed25519 instruction fails", async () => {
+  it("(5f) missing Ed25519 instruction fails", async () => {
     const id = await pendingBounty();
     await expectError(
       resolve({ bountyId: id, outcome: true, includeEd25519Ix: false }),

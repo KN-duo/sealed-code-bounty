@@ -39,8 +39,8 @@ export const DEFAULT_PRIZE_LAMPORTS = 2 * LAMPORTS_PER_SOL;
 export const FORCE_UNLOCK_DELAY_S = 3600;
 
 // programs/sealed-code-bounty/src/constants.rs
-export const VERDICT_DOMAIN_TAG = "SCB_VERDICT_V4";
-export const VERDICT_MSG_LEN = 207;
+export const VERDICT_DOMAIN_TAG = "SCB_VERDICT_V5";
+export const VERDICT_MSG_LEN = 239;
 export const MAX_CIPHERTEXT_LEN = 9_700;
 
 // Deterministic stand-in for the enclave's real flag commitment, so `seed` and the

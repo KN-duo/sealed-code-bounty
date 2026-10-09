@@ -1,7 +1,7 @@
 // Chain plumbing for the rig: program handle, PDAs, and the attested-verdict path.
 //
 // Deliberately mirrors tests/sealed-code-bounty.ts so the rig and the Anchor suite
-// agree byte-for-byte on the SCB_VERDICT_V4 wire and on account ordering.
+// agree byte-for-byte on the SCB_VERDICT_V5 wire and on account ordering.
 
 import fs from "node:fs";
 import BN from "bn.js";
@@ -107,12 +107,13 @@ export async function fundTo(connection, pubkey, sol) {
 // --- verdict attestation ---------------------------------------------------
 
 /**
- * Canonical SCB_VERDICT_V4 wire (constants.rs):
- *   14 B tag || bounty || env_blob_sha256 || exploit_sha256 || solver
- *   || flag_commitment || buyer_enc_pk || 1 B outcome
+ * Canonical SCB_VERDICT_V5 wire (constants.rs):
+ *   14 B tag || bounty || manifest_sha256 || env_blob_sha256 || exploit_sha256
+ *   || solver || flag_commitment || buyer_enc_pk || 1 B outcome
  */
 export function buildVerdictMessage({
   bounty,
+  manifestSha256,
   envBlobSha256,
   exploitSha256,
   solver,
@@ -123,6 +124,7 @@ export function buildVerdictMessage({
   const msg = Buffer.concat([
     Buffer.from(VERDICT_DOMAIN_TAG),
     bounty.toBuffer(),
+    Buffer.from(manifestSha256),
     Buffer.from(envBlobSha256),
     Buffer.from(exploitSha256),
     solver.toBuffer(),
@@ -156,12 +158,14 @@ export async function resolveVerdict({
   const program = makeProgram(connection, keys.relayer);
   const solver = bountyAccount.currentSubmission.solver;
   const envBlobSha256 = bytes(bountyAccount.envBlobSha256);
+  const manifestSha256 = bytes(bountyAccount.manifestSha256);
   const exploitSha256 = bytes(bountyAccount.currentSubmission.exploitSha256);
   const flagCommitment = bytes(bountyAccount.flagCommitment);
   const buyerEncPk = bytes(bountyAccount.buyerEncPk);
 
   const message = buildVerdictMessage({
     bounty: bountyKey,
+    manifestSha256,
     envBlobSha256,
     exploitSha256,
     solver,

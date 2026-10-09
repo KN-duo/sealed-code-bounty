@@ -90,11 +90,11 @@ Restart it if it was already running — step 2 wrote `.env.local`.
 
 The mock unseals your exploit with the enclave key it owns, then:
 
-- **FAIL** if the text matches `/broken/i`, or is under 20 bytes
-- **PASS** otherwise
+- **FAIL** if the sealed payload is under 20 bytes
+- **PASS** otherwise; the mock does not unpack or execute ZIP contents
 
-So `examples/ret2win/solution/solve.py` passes and `solve-broken.py` fails, without
-brittle hash matching against files you may want to edit.
+Use `node devrig/rig.mjs serve --always fail` to exercise a FAIL/payout-refund
+cycle. The archive's exploit source does not affect this mock verdict.
 
 On PASS it seals the exploit to the bounty's on-chain `buyer_enc_pk` and writes it as the
 **inline** reveal carrier (the mock does not implement the URL carrier, so exploits must
@@ -110,12 +110,13 @@ which is what the program requires.
 someone wins. This is the first real exercise of the decode/normalize layer and of the
 account-namespace casing bridge in `lib/anchorClient.ts`.
 
-**2. PASS.** Open a printed `#/hunt/<pda>` link, connect Phantom, drop
-`examples/ret2win/solution/solve.py`, and hit *Seal, sign & submit*. Expect the activity
-log to walk sha256 → sealed box → intent signature → `blob url` → `tx`, then flip to the
-win screen within a few seconds. Check `#/leaderboard` for the Receipt.
+**2. PASS.** Open a printed `#/hunt/<pda>` link, connect Phantom, upload a ZIP
+with top-level `exploit.py`, and hit *Seal, sign & submit*. Expect the activity
+log to walk sha256 → sealed box → intent signature → receipt → `tx`, then flip
+to the win screen within a few seconds. Check `#/leaderboard` for the Receipt.
 
-**3. FAIL.** Same on the second seeded bounty with `solve-broken.py`. Expect the
+**3. FAIL.** Restart the mock enclave with `--always fail` and submit a ZIP to
+the second seeded bounty. Expect the
 did-not-pass screen, the submission slot reopened, and your bond refunded.
 
 **4. Buyer loop.** `#/post` with Phantom: generate a key, download the backup (the wizard
@@ -136,7 +137,7 @@ so scenario 4 needs a bounty you posted yourself.
 node devrig/selftest.mjs
 ```
 
-No validator needed. Covers the `SCB_VERDICT_V4` wire length, operator signatures, both
+No validator needed. Covers the `SCB_VERDICT_V5` wire length, operator signatures, both
 sealed-box hops, and the mock's HTTP surface — the things that break silently if the
 program's constants drift.
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Offline self-test for the rig: everything that does NOT need a validator.
 //
-// Covers the parts that are silently wrong if they drift — the SCB_VERDICT_V4 wire
+// Covers the parts that are silently wrong if they drift — the SCB_VERDICT_V5 wire
 // length, operator signatures, the two sealed-box hops (hunter -> enclave, enclave ->
 // buyer), and the HTTP surface src/lib/runner.ts calls.
 //
@@ -26,6 +26,7 @@ const s = await sodium();
 console.log("\n  verdict attestation");
 const verdictInputs = {
   bounty: Keypair.generate().publicKey,
+  manifestSha256: new Uint8Array(32),
   envBlobSha256: new Uint8Array(32),
   exploitSha256: new Uint8Array(32),
   solver: Keypair.generate().publicKey,
@@ -35,7 +36,7 @@ const verdictInputs = {
 const message = buildVerdictMessage({ ...verdictInputs, outcome: true });
 const failMessage = buildVerdictMessage({ ...verdictInputs, outcome: false });
 check("message is the canonical length", message.length === VERDICT_MSG_LEN, `${message.length} B`);
-check("message opens with the domain tag", message.subarray(0, 14).toString() === "SCB_VERDICT_V4");
+check("message opens with the domain tag", message.subarray(0, 14).toString() === "SCB_VERDICT_V5");
 check(
   "PASS and FAIL differ only in the trailing outcome byte",
   message.subarray(0, VERDICT_MSG_LEN - 1).equals(failMessage.subarray(0, VERDICT_MSG_LEN - 1)) &&
@@ -49,7 +50,7 @@ check(
 );
 check(
   "a tampered message does not verify",
-  !s.crypto_sign_verify_detached(sig, Buffer.concat([message.subarray(0, 206), Buffer.from([0])]), keys.operator.publicKey.toBytes()),
+  !s.crypto_sign_verify_detached(sig, Buffer.concat([message.subarray(0, 238), Buffer.from([0])]), keys.operator.publicKey.toBytes()),
 );
 
 console.log("\n  sealed boxes");

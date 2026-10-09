@@ -1,5 +1,13 @@
 # scb-pack
 
+Pre-production status (2026-10-09): the CLI has local package/submission
+contract tests (12 pass), but challenge artifact publication is still a typed
+stub. There is no deployed website, chain program, or enclave service. The
+encrypted submission flow protects bytes in transit; until attested key
+provisioning is live, it does not prove the verifier operator cannot decrypt.
+See [`../DEPLOYMENT-HANDOFF.md`](../DEPLOYMENT-HANDOFF.md) before treating any
+command as production-ready.
+
 SealedCodeBounty challenge packager (`docs/BUILD_PLAN_v2.md` §4.2/§4.5).
 
 ```bash
@@ -35,17 +43,22 @@ node dist/scb-submit.js \
   --rpc-url http://127.0.0.1:8899 \
   --keypair ~/.config/solana/hunter.json \
   --bounty <buyer_pubkey>:<numeric_id> \
-  --file ./exploit.py \
+  --file ./exploit.zip \
   --enclave-url http://127.0.0.1:8443 \
   [--program-id Fbqou...]        # defaults to the deployed id
   [--wait]                       # poll until PASS/FAIL
   [--dry-run]                    # print payload shapes; zero network
 ```
 
+The ZIP must contain a top-level `exploit.py`, or a strict
+`scb-exploit.json` naming an extracted `.py` file. The client caps the archive
+at 9,000 compressed bytes; the runner independently enforces ZIP structure,
+expanded size, file count, paths, and entrypoint rules.
+
 Steps performed (mirroring BUILD_PLAN_v2 §4.3):
 1. fetch Bounty → deadline guard client-side
 2. fetch Config → enclave X25519 pk
-3. `crypto_box_seal(exploit.py, enclave_pk)` — plaintext never leaves the machine unencrypted
+3. `crypto_box_seal(exploit.zip, enclave_pk)` — bytes are encrypted before upload. The archive is capped at 9,000 compressed bytes; the runner validates its contents. Until attested key provisioning is live, this does not prove the verifier operator cannot decrypt.
 4. intent signature over `SCB_SUBMIT_V1 ‖ bounty_pda ‖ sha256(exploit)` with the hunter wallet
 5. POST /internal/upload; validate the exact response `{ "receipt": "<64 lowercase hex>" }`
 6. `submit_exploit(bounty_id, "scb:submission:v1:<receipt>", sha256)` tx signed by the hunter

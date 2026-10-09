@@ -5,7 +5,7 @@
  * Flow:
  *   a. fetch Bounty via RPC   → env_blob_sha256 / buyer_enc_pk / deadline guard
  *   b. fetch Config via RPC   → enclave_enc_pk
- *   c. crypto_box_seal(exploit.py bytes, enclave_enc_pk)
+ *   c. crypto_box_seal(exploit ZIP bytes, enclave_enc_pk)
  *   d. intent signature over b"SCB_SUBMIT_V1" || bounty_pda || sha256(plaintext)
  *      (solver wallet is a Solana ed25519 keypair — same scheme the enclave
  *       verifies with ed25519-dalek)
@@ -38,6 +38,22 @@ import { createHash } from "crypto";
 export const DEFAULT_PROGRAM_ID =
   "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V";
 export const INTENT_TAG = Buffer.from("SCB_SUBMIT_V1", "ascii");
+export const MAX_EXPLOIT_ZIP_BYTES = 9_000;
+
+/** Fast client-side guard; the enclave validates the ZIP structure and contents. */
+export function validateExploitZip(bytes: Uint8Array): void {
+  if (bytes.length > MAX_EXPLOIT_ZIP_BYTES) {
+    throw new Error(`Exploit ZIP exceeds the ${MAX_EXPLOIT_ZIP_BYTES} byte limit.`);
+  }
+  const isZip =
+    bytes.length >= 4 &&
+    bytes[0] === 0x50 &&
+    bytes[1] === 0x4b &&
+    ((bytes[2] === 0x03 && bytes[3] === 0x04) ||
+      (bytes[2] === 0x05 && bytes[3] === 0x06) ||
+      (bytes[2] === 0x07 && bytes[3] === 0x08));
+  if (!isZip) throw new Error("--file must be a ZIP archive (invalid ZIP signature).");
+}
 
 export interface UploadResponse {
   receipt: string;

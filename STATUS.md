@@ -1,7 +1,9 @@
-# STATUS.md — single source of truth (as of 2026-08-25)
+# STATUS.md — historical baseline (as of 2026-08-25)
 
-Maps every phase row of `docs/BUILD_PLAN_v2.md` §5 to the actual repo state,
-with commit hashes. If this file and the build plan disagree, this file wins.
+The phase table below is preserved as a historical snapshot and is not current:
+it predates the V5 verdict binding, the frontend v2 implementation, and bounded
+exploit ZIP support. For current release gates and verification evidence, see
+[DEPLOYMENT-HANDOFF.md](DEPLOYMENT-HANDOFF.md) and [tasks/todo.md](tasks/todo.md).
 
 ## Phase table
 

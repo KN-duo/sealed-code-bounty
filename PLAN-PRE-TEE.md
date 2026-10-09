@@ -1,5 +1,11 @@
 # PRE-TEE PLAN — what must be done before wrapping the pipeline in an enclave
 
+> **Historical plan:** this checklist predates the durable receipt, manifest
+> binding, and bounded-ZIP work. Its lane assignments and unchecked tasks are
+> not a current status report. Use [`DEPLOYMENT-HANDOFF.md`](DEPLOYMENT-HANDOFF.md)
+> and [`tasks/todo.md`](tasks/todo.md) for the authoritative state and remaining
+> gates. The no-cloud-mutation and honest-TEE-claim rules still apply.
+
 > Owner split: **LEFT CHAT = writes code** · **RIGHT CHAT (Ox Alpha) = reviews, runs gates, owns this plan**
 > Rule: nothing enters the TEE until every step here passes on a plain laptop/CI.
 > Status markers: `[ ]` todo · `[~]` in progress · `[x]` done

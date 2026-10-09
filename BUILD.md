@@ -1,5 +1,12 @@
 # BUILD — reproducible verifier build (trust-root recipe)
 
+> **Status:** this is an intended trust-root recipe, not a verified build
+> procedure. The repository does not yet contain a dedicated production EIF
+> build pipeline, and no EIF/PCR has been produced or approved. The runner's
+> current Docker runtime image is not automatically a valid Nitro image.
+> Follow [`DEPLOYMENT-HANDOFF.md`](DEPLOYMENT-HANDOFF.md) for current gates;
+> never pin a placeholder measurement as if it were a release.
+
 The on-chain trust story pins `(PCR0, ed25519 pubkey)`. Anyone must be able to
 reproduce the enclave image from public source. This file is the contract.
 

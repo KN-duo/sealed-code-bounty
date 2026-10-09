@@ -13,6 +13,7 @@ use std::sync::Mutex;
 /// Process-global env (PATH/SCB_*) is mutated by the shim tests; serialize
 /// them so parallel test threads cannot race the environ.
 static ENV_LOCK: Mutex<()> = Mutex::new(());
+static ENTRYPOINT: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 
 fn shim_path() -> PathBuf {
     // tests/ -> runner/ -> test-docker-shim/docker
@@ -27,10 +28,11 @@ fn params<'a>(
     work: &'a std::path::Path,
     aslr_off: bool,
 ) -> RunParams<'a> {
+    let entrypoint = ENTRYPOINT.get_or_init(|| vec!["python3".into(), "exploit.py".into()]);
     RunParams {
         rootfs_dir: rootfs,
         work_dir: work,
-        exploit_py: b"print(open('/flag').read())",
+        exploit_entrypoint: entrypoint,
         env_blob_path: None,
         target_image: Some("scb/target:test".into()),
         target_entrypoint: vec!["/usr/local/bin/serve".into()],
@@ -61,27 +63,36 @@ fn exploit_args_carry_network_mounts_and_optional_setarch() {
     let work = std::path::Path::new("/tmp/wk");
 
     let off = params(rootfs, work, true);
-    let a = exploit_run_args(&off, "x86_64");
+    let a = exploit_run_args(&off, "x86_64", "scb/exploit-runtime:test");
     let idx = |v: &str| a.iter().position(|x| x == v).expect(v);
     assert_eq!(a[idx("--network") + 1], "scb-loopback");
     assert!(a.iter().any(|x| x.ends_with("/srv:ro")));
-    assert!(a.iter().any(|x| x.ends_with(":/work")));
+    assert!(a.iter().any(|x| x.ends_with(":/work:ro")));
     assert!(a.contains(&"SEED=0".to_string()));
     assert!(a.contains(&"TARGET_HOST=target".to_string()));
     assert!(a.contains(&"TARGET_PORT=1337".to_string()));
+    assert_eq!(a[idx("scb/exploit-runtime:test") + 1], "setarch");
 
-    // setarch sits directly before python3.
+    // setarch sits directly before the validated argument array.
     let i = a.iter().position(|x| x == "setarch").expect("setarch");
-    assert_eq!(&a[i..i + 4], &["setarch".to_string(), "x86_64".to_string(), "-R".to_string(), "python3".to_string()]);
+    assert_eq!(
+        &a[i..i + 4],
+        &[
+            "setarch".to_string(),
+            "x86_64".to_string(),
+            "-R".to_string(),
+            "python3".to_string()
+        ]
+    );
 
     let on = params(rootfs, work, false);
-    let a2 = exploit_run_args(&on, "x86_64");
+    let a2 = exploit_run_args(&on, "x86_64", "scb/exploit-runtime:test");
     assert!(!a2.contains(&"setarch".to_string()));
-    assert_eq!(
-        a2.last().map(String::as_str),
-        Some("exploit.py"),
-        "python3 must be last without the wrapper"
-    );
+    let image = a2
+        .iter()
+        .position(|arg| arg == "scb/exploit-runtime:test")
+        .expect("runtime image");
+    assert_eq!(&a2[image + 1..], &["python3", "exploit.py"]);
 }
 
 #[test]
@@ -155,10 +166,7 @@ fn with_shim(tag: &str) -> (ShimEnv, PathBuf) {
         std::env::set_var("PATH", newp);
     }
     unsafe { std::env::set_var("SCB_SHIM_STATE", &state) };
-    (
-        ShimEnv { prev_path },
-        state_clone,
-    )
+    (ShimEnv { prev_path }, state_clone)
 }
 
 /// NOTE: PATH mutation is process-global; these tests therefore must not run
@@ -198,9 +206,16 @@ async fn shim_happy_path_runs_exploit_and_returns_flag_line() {
     let net = find("network-create");
     let detached = find("run-detached");
     let exploit = find("run-exploit");
-    let rm_exploit = lines.iter().filter(|l| l.contains("rm scb-exploit")).count();
+    let rm_exploit = lines
+        .iter()
+        .filter(|l| l.contains("rm scb-exploit"))
+        .count();
     let rm_target = lines.iter().filter(|l| l.contains("rm scb-target")).count();
-    assert_eq!((rm_exploit, rm_target), (1, 1), "both containers cleaned once");
+    assert_eq!(
+        (rm_exploit, rm_target),
+        (1, 1),
+        "both containers cleaned once"
+    );
     assert!(net < detached && detached < exploit);
     assert!(exploit < find("rm scb-exploit"));
     void(rm_target);
@@ -234,8 +249,17 @@ async fn shim_timeout_kills_and_still_cleans_both_containers() {
     // both AFTER the exploit run line.
     let log = std::fs::read_to_string(state.join("cmd.log")).unwrap();
     let lines: Vec<&str> = log.lines().collect();
-    let exploit_run = lines.iter().position(|l| l.contains("run-exploit")).unwrap();
-    let rm_e = lines.iter().position(|l| l.contains("rm scb-exploit")).unwrap();
-    let rm_t = lines.iter().position(|l| l.contains("rm scb-target")).unwrap();
+    let exploit_run = lines
+        .iter()
+        .position(|l| l.contains("run-exploit"))
+        .unwrap();
+    let rm_e = lines
+        .iter()
+        .position(|l| l.contains("rm scb-exploit"))
+        .unwrap();
+    let rm_t = lines
+        .iter()
+        .position(|l| l.contains("rm scb-target"))
+        .unwrap();
     assert!(exploit_run < rm_e && rm_e < rm_t);
 }

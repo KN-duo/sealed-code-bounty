@@ -1,5 +1,5 @@
 // Minimal stand-in for the verifier enclave's /internal/verify endpoint.
-// TEST HARNESS ONLY: signs canned SCB_VERDICT_V4 verdicts with a throwaway
+// TEST HARNESS ONLY: signs canned SCB_VERDICT_V5 verdicts with a throwaway
 // keypair so the relayer pipeline can be exercised end-to-end without a TEE.
 //
 // Usage (programmatic, CommonJS):
@@ -38,10 +38,11 @@ function b58decode(s) {
   return Buffer.from(n.toString(16).padStart(64, "0"), "hex");
 }
 
-function buildMessage(bountyPdaB58, envHex, exploitHex, solverB58, flagHex, buyerPkHex, outcome) {
+function buildMessage(bountyPdaB58, manifestHex, envHex, exploitHex, solverB58, flagHex, buyerPkHex, outcome) {
   return Buffer.concat([
-    Buffer.from("SCB_VERDICT_V4", "ascii"),
+    Buffer.from("SCB_VERDICT_V5", "ascii"),
     b58decode(bountyPdaB58),
+    Buffer.from(manifestHex, "hex"),
     Buffer.from(envHex, "hex"),
     Buffer.from(exploitHex, "hex"),
     b58decode(solverB58),
@@ -67,6 +68,7 @@ function makeHandler(kp, tamper) {
         const outcome = true;
         const msg = buildMessage(
           rb.bounty_pda,
+          rb.manifest_sha256,
           cv.env_blob_sha256,
           cv.exploit_sha256,
           rb.solver_pubkey,
@@ -156,10 +158,11 @@ if (require.main === module) {
   const commitments = new Map(); // bounty_pda_b58 -> commitment hex
   const uploads = new Map();     // bounty_pda_b58 -> {plaintext: Buffer, chain_view}
 
-  function buildMessage(pdaB58, envHex, exploitHex, solverB58, flagHex, buyerPkHex, outcome) {
+  function buildMessage(pdaB58, manifestHex, envHex, exploitHex, solverB58, flagHex, buyerPkHex, outcome) {
     return Buffer.concat([
-      Buffer.from("SCB_VERDICT_V4", "ascii"),
+      Buffer.from("SCB_VERDICT_V5", "ascii"),
       b58decode(pdaB58),
+      Buffer.from(manifestHex, "hex"),
       Buffer.from(envHex, "hex"),
       Buffer.from(exploitHex, "hex"),
       b58decode(solverB58),
@@ -211,7 +214,7 @@ if (require.main === module) {
     }
 
     if (req.method === "POST" && req.url === "/internal/verify") {
-      return readBody(async ({ bounty_pda, claimed_chain_view }) => {
+      return readBody(async ({ bounty_pda, claimed_chain_view, manifest_sha256 }) => {
         try {
         const rec = uploads.get(bounty_pda);
         if (!rec) return respond(404, { error: "no pending upload for this bounty" });
@@ -230,6 +233,7 @@ if (require.main === module) {
         const outcome = !forceFail;
         const msg = buildMessage(
           bounty_pda,
+          manifest_sha256,
           st.env_blob_sha256,
           st.exploit_sha256,
           rec.solver_pubkey,

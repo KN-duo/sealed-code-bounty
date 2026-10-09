@@ -154,7 +154,7 @@ Escrow: prize transferred into the PDA at creation; rent swept on close.
 - `bounty: Pubkey`, `solver: Pubkey`, `exploit_sha256: [u8; 32]`, `first_blood: bool`, `timestamp: i64`
 
 **`Reveal`** (PDA seed `["reveal", bounty]`, created only on PASS):
-- `ciphertext: Vec<u8>` ≤ 10_240 bytes (libsodium sealed box over the exploit script)
+- `ciphertext: Vec<u8>` ≤ 10_240 bytes (libsodium sealed box over the exploit ZIP)
 - If the sealed box exceeds the cap, store `ciphertext_url: String≤200` + `ciphertext_sha256` instead.
 
 #### Instructions
@@ -244,7 +244,7 @@ HTTP API (vsock/localhost only):
 
 **Upload handshake:**
 1. Hunter client fetches Bounty state via its own RPC (env hash, buyer pk, deadline).
-2. Client seals: `crypto_box_seal(exploit.py, Config.enclave_enc_pk)` — proxy, bucket, logs see only ciphertext.
+2. Client seals the ZIP bytes: `crypto_box_seal(exploit.zip, Config.enclave_enc_pk)` — proxy, bucket, logs see only ciphertext.
 3. Client signs `SCB_SUBMIT_V1 || bounty_pda || sha256(exploit_plaintext)` with solver wallet; POSTs upload payload.
 4. Enclave order of operations: verify intent signature (abort before any expensive work) → persist blob + metadata → return receipt hash.
 5. Only then does the hunter call `submit_exploit(exploit_sha256)` on-chain; the relayer dispatches verify jobs only after confirming enclave-side blob presence — eliminating the bogus-FAIL ordering race.
@@ -258,7 +258,7 @@ HTTP API (vsock/localhost only):
 3. **Flag derivation (F1/F2):** fetch `M` from KMS if not held (boot-time, §4.4). `flag = base58(HKDF-SHA256(ikm=M, salt=bounty_pda, info=b"scb-flag-v1", L=32))`. `seal_bounty` computes `flag_commitment = sha256(flag)` at creation time. Blast radius note: `M` leak compromises every flag — hence attestation-conditioned KMS delivery is mandatory in v1 (§4.4).
 4. Replace `{{FLAG}}` in `/flag` (only there) inside the rootfs copy.
 5. Spawn target under nsjail: own mount/PID/IPC namespaces, `--time_limit` from manifest, RLIMIT_AS, network namespace with loopback only. Apply manifest determinism block identically to what the dev plane applies (parity rule).
-6. Spawn exploit in second nsjail profile sharing the SAME netns (loopback reachability), cwd=`/work`: `python3 exploit.py` (python3 + pwntools preinstalled). Capture combined stdout+stderr with hard wall-clock cap. For `binary` targets the exploit drives the process over stdio instead.
+6. Safely unpack the bounded exploit ZIP into `/work`; spawn its validated `python3` argument array in a second nsjail profile sharing the SAME netns (loopback reachability). Default entrypoint is top-level `exploit.py`; an optional strict `scb-exploit.json` may select another extracted `.py` script. Capture combined stdout+stderr with hard wall-clock cap. For `binary` targets the exploit drives the process over stdio instead.
 7. **Single deterministic run (D13).** Run exactly once. `PASS = stdout.contains(flag)` on that run. Redact every occurrence of the flag and its **hex, base64, base58, and double-encoded forms** → `[REDACTED]` (D11). Persist redacted log for feedback. Unit-test the redactor against all encodings — the flag IS base58, so base58 was the classic miss.
 8. Sign the 175-byte canonical `SCB_VERDICT_V3` message (including `env_blob_sha256` actually used this run) with the derived verdict key.
 9. If PASS: `crypto_box seal(exploit_py, buyer_x25519_pk)`; return `{outcome, sig, reveal_ciphertext, redacted_log}`.
