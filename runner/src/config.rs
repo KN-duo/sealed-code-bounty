@@ -3,12 +3,13 @@
 use crate::sandbox::SandboxExecutor;
 use std::path::PathBuf;
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 #[derive(Clone)]
 pub struct Config {
     pub port: u16,
     /// Master secret `M` — the root of all flag material (D14). 32 bytes.
-    pub master_secret: [u8; 32],
+    pub master_secret: Zeroizing<[u8; 32]>,
     /// Directory used for unpacked rootfs copies and uploaded blob staging.
     pub work_dir: PathBuf,
     /// Global cap on stored upload bytes (backpressure → HTTP 503).
@@ -59,21 +60,59 @@ pub struct BuildOpts {
 
 impl Config {
     pub fn from_env() -> Result<Self, String> {
+        #[cfg(not(feature = "dev-secrets"))]
+        return Err(
+            "release runner must use from_attested_master; plaintext key environment input is disabled".into(),
+        );
+        #[cfg(feature = "dev-secrets")]
+        Self::from_env_inner(None, true)
+    }
+
+    /// Production constructor. The caller must obtain this key from the
+    /// attestation-gated KMS bootstrap, never from an environment variable.
+    pub fn from_attested_master(master_secret: Zeroizing<[u8; 32]>) -> Result<Self, String> {
+        Self::from_env_inner(Some(master_secret), false)
+    }
+
+    fn from_env_inner(
+        master_override: Option<Zeroizing<[u8; 32]>>,
+        allow_dev_secrets: bool,
+    ) -> Result<Self, String> {
         let backend = std::env::var("SCB_SUBMISSION_STORE").map_err(|_| {
             "SCB_SUBMISSION_STORE must be explicitly set to vsock or development-directory"
                 .to_string()
         })?;
-        let mut cfg = Self::build(BuildOpts {
+        let master_hex = if allow_dev_secrets {
+            std::env::var("SCB_MASTER_SECRET_HEX").ok()
+        } else {
+            if std::env::var_os("SCB_MASTER_SECRET_HEX").is_some()
+                || std::env::var_os("SCB_ENCLAVE_ENC_SECRET_HEX").is_some()
+            {
+                return Err(
+                    "plaintext secret environment variables are disabled in release mode".into(),
+                );
+            }
+            None
+        };
+        let opts = BuildOpts {
             port: std::env::var("PORT").ok(),
-            master_hex: std::env::var("SCB_MASTER_SECRET_HEX").ok(),
-            enc_secret_hex: std::env::var("SCB_ENCLAVE_ENC_SECRET_HEX").ok(),
+            master_hex,
+            enc_secret_hex: if allow_dev_secrets {
+                std::env::var("SCB_ENCLAVE_ENC_SECRET_HEX").ok()
+            } else {
+                None
+            },
             work_dir: std::env::var("SCB_WORK_DIR").ok(),
             storage_cap: std::env::var("SCB_STORAGE_CAP_BYTES").ok(),
             rate_max: std::env::var("SCB_RATE_LIMIT_MAX").ok(),
             rate_window: std::env::var("SCB_RATE_LIMIT_WINDOW_SECS").ok(),
             submission_store: None,
             network: Some(std::env::var("SCB_NETWORK").unwrap_or_else(|_| "scb-loopback".into())),
-        })?;
+        };
+        let mut cfg = match master_override {
+            Some(master) => Self::build_with_master(opts, master)?,
+            None => Self::build(opts)?,
+        };
         cfg.submission_store = match backend.as_str() {
             "vsock" => Arc::new(crate::submission_store::VsockStore::new(
                 std::env::var_os("SCB_STORAGE_HELPER")
@@ -110,9 +149,20 @@ impl Config {
 
     /// Test/programmatic constructor.
     pub fn build(o: super::config::BuildOpts) -> Result<Self, String> {
+        let hex_str = o.master_hex.as_ref().ok_or(
+            "SCB_MASTER_SECRET_HEX is required for the development constructor; release builds must use attested KMS bootstrap",
+        )?;
+        let master_secret = Zeroizing::new(decode_master_hex(hex_str)?);
+        Self::build_with_master(o, master_secret)
+    }
+
+    fn build_with_master(
+        o: super::config::BuildOpts,
+        master_secret: Zeroizing<[u8; 32]>,
+    ) -> Result<Self, String> {
         let BuildOpts {
             port,
-            master_hex,
+            master_hex: _,
             enc_secret_hex,
             work_dir,
             storage_cap,
@@ -126,21 +176,21 @@ impl Config {
             None => 8443,
         };
 
-        let hex_str = master_hex.ok_or(
-            "SCB_MASTER_SECRET_HEX is required: 64 hex chars = 32-byte master secret M. \
-             It never leaves the enclave; losing it only means flags rotate.",
-        )?;
-        let master_secret = decode_master_hex(&hex_str)?;
-
-        let enc_hex = enc_secret_hex.ok_or(
-            "SCB_ENCLAVE_ENC_SECRET_HEX is required: 64 hex chars = X25519 secret key whose \
-             public half is pinned as Config.enclave_enc_pk on-chain",
-        )?;
-        let enc_bytes: [u8; 32] = hex::decode(enc_hex.trim())
-            .map_err(|_| "SCB_ENCLAVE_ENC_SECRET_HEX must be valid hex")?
-            .try_into()
-            .map_err(|_| "SCB_ENCLAVE_ENC_SECRET_HEX must be exactly 64 hex chars")?;
-        let enclave_enc_secret = crypto_box::SecretKey::from(enc_bytes);
+        // Development can keep supplying an explicit key while transitioning
+        // clients. The release path can instead bootstrap one KMS-protected
+        // master and derive this stable key with a separate HKDF label.
+        let enclave_enc_secret = match enc_secret_hex {
+            Some(enc_hex) => {
+                let enc_bytes: [u8; 32] = hex::decode(enc_hex.trim())
+                    .map_err(|_| "SCB_ENCLAVE_ENC_SECRET_HEX must be valid hex")?
+                    .try_into()
+                    .map_err(|_| "SCB_ENCLAVE_ENC_SECRET_HEX must be exactly 64 hex chars")?;
+                crypto_box::SecretKey::from(enc_bytes)
+            }
+            None => {
+                crypto_box::SecretKey::from(crate::flag::derive_enclave_enc_seed(&master_secret))
+            }
+        };
 
         let parse_num = |raw: &Option<String>, dflt: u64, name: &str| -> Result<u64, String> {
             match raw {
@@ -159,12 +209,26 @@ impl Config {
         let rate_limit_window_secs =
             parse_num(&rate_window, 60 * 60, "SCB_RATE_LIMIT_WINDOW_SECS")?;
 
-        // Task 9: SCB_SANDBOX=docker|stub (default stub).
-        let sandbox_name = std::env::var("SCB_SANDBOX").unwrap_or_else(|_| "stub".into());
+        // Production defaults to daemonless Podman inside the enclave. The
+        // development build keeps its typed stub default and Docker opt-in.
+        #[cfg(feature = "dev-secrets")]
+        let default_sandbox = "stub";
+        #[cfg(not(feature = "dev-secrets"))]
+        let default_sandbox = "podman";
+        let sandbox_name = std::env::var("SCB_SANDBOX").unwrap_or_else(|_| default_sandbox.into());
         let sandbox: Arc<dyn SandboxExecutor + Send + Sync> = match sandbox_name.as_str() {
-            "docker" => Arc::new(crate::sandbox::DockerCli::from_env()?),
-            "stub" => Arc::new(crate::sandbox::StubSandbox),
-            other => return Err(format!("SCB_SANDBOX must be docker|stub, got \"{other}\"")),
+            "docker" if cfg!(feature = "dev-secrets") => {
+                Arc::new(crate::sandbox::DockerCli::from_env()?)
+            }
+            "docker" => return Err("Docker daemon execution is disabled in release builds".into()),
+            "podman" => Arc::new(crate::sandbox::ContainerCli::podman_from_env()?),
+            "stub" if cfg!(feature = "dev-secrets") => Arc::new(crate::sandbox::StubSandbox),
+            "stub" => return Err("StubSandbox is disabled in release builds".into()),
+            other => {
+                return Err(format!(
+                    "SCB_SANDBOX must be podman|docker|stub, got \"{other}\""
+                ))
+            }
         };
 
         let submission_store = submission_store.unwrap_or_else(|| {

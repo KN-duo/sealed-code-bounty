@@ -5,6 +5,12 @@ edition = "2021"
 description = "SealedCodeBounty verifier runner: flag derivation, submission gating, safe unpacking, sandboxed exploit execution, signed verdicts."
 publish = false
 
+[features]
+# Opt-in local development only. The default and release builds keep plaintext
+# environment key support absent.
+default = []
+dev-secrets = []
+
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
@@ -28,6 +34,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 zeroize = "=1.9.0"
 tempfile = "3"
 libc = "0.2"
+aws-nitro-enclaves-nsm-api = "=0.4.0"
+serde_bytes = "0.11"
 
 [profile.release]
 overflow-checks = true

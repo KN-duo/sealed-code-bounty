@@ -12,6 +12,7 @@ use scb_runner::routes;
 use scb_runner::state::AppState;
 use serde_json::{json, Value};
 use sha2::Digest;
+use std::os::unix::fs::PermissionsExt;
 use std::sync::Arc;
 
 const MASTER_HEX: &str = "4242424242424242424242424242424242424242424242424242424242424242";
@@ -410,6 +411,20 @@ impl scb_runner::sandbox::SandboxExecutor for AssertArtifactSandbox {
         assert_eq!(p.target_port, 4444);
         assert_eq!(p.target_entrypoint, ["/app/target", "space in argument"]);
         assert!(p.target_image.is_none());
+        let flag_path = p.rootfs_dir.join("flag");
+        let flag = std::fs::read(&flag_path).unwrap();
+        assert!(!flag.is_empty());
+        assert_eq!(
+            std::fs::metadata(flag_path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let pda: [u8; 32] = bs58::decode(BOUNTY_PDA_B58)
+            .into_vec()
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let expected = scb_runner::flag::derive_flag(&[0x42; 32], &pda);
+        assert_eq!(flag, expected.expose().as_bytes());
         Ok(scb_runner::sandbox::ExecOutcome {
             output: "no flag".into(),
             timed_out: false,
@@ -479,6 +494,13 @@ async fn artifact_path_checks_both_hashes_and_uses_manifest_execution_limits() {
         if !corrupt {
             assert_eq!(result["outcome"], false);
         }
+        assert!(std::fs::read_dir(temp.path()).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("scb-flag-")
+        }));
         // Only the durable encrypted submission directory remains.
         assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 1);
     }

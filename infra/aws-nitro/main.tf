@@ -209,14 +209,49 @@ resource "aws_s3_bucket_lifecycle_configuration" "reveals" {
 }
 
 resource "aws_kms_key" "master_secret" {
-  description             = "${local.name} master secret; decrypt requires the approved Nitro EIF PCR0."
-  enable_key_rotation     = true
+  description = "${local.name} master secret; decrypt requires the approved Nitro EIF PCR0."
+  # AWS bills an extra $1/month for each of the first two customer-managed
+  # key rotations. Keep automatic rotation disabled to honor the hard $2/month
+  # target; rotate by the documented create/re-pin/delete ceremony when the
+  # budget has room for the transition.
+  enable_key_rotation     = false
   deletion_window_in_days = 7
   policy                  = data.aws_iam_policy_document.master_secret.json
   tags                    = merge(local.common_tags, { DataClass = "master-secret" })
 }
 
 data "aws_iam_policy_document" "master_secret" {
+  # Account administration delegates IAM permissions. Explicit denies keep
+  # those grants from authorizing plaintext decrypt or a re-encryption bypass.
+  # Key administrators can still edit policy; policy changes require review.
+  statement {
+    sid    = "DenyDecryptWithoutApprovedRecipient"
+    effect = "Deny"
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    actions   = ["kms:Decrypt"]
+    resources = ["*"]
+    condition {
+      # A missing recipient-attestation key also matches this negated operator.
+      test     = "StringNotEqualsIgnoreCase"
+      variable = "kms:RecipientAttestation:ImageSha384"
+      values   = [local.eif_pcr0]
+    }
+  }
+
+  statement {
+    sid    = "DenyReEncryptionBypass"
+    effect = "Deny"
+    principals {
+      type        = "*"
+      identifiers = ["*"]
+    }
+    actions   = ["kms:ReEncrypt*"]
+    resources = ["*"]
+  }
+
   statement {
     sid    = "AccountKeyAdministration"
     effect = "Allow"
@@ -255,6 +290,7 @@ resource "aws_iam_role_policy" "parent_runtime" {
         Effect = "Allow"
         Action = ["s3:GetObject"]
         Resource = [
+          "${aws_s3_bucket.content.arn}/${var.enclave_eif_s3_key}",
           "${aws_s3_bucket.content.arn}/scb/manifests/*",
           "${aws_s3_bucket.content.arn}/scb/envs/*",
           "${aws_s3_bucket.content.arn}/scb/submissions/*",
@@ -269,6 +305,21 @@ resource "aws_iam_role_policy" "parent_runtime" {
         Effect   = "Allow"
         Action   = ["s3:PutObject"]
         Resource = ["${aws_s3_bucket.reveals.arn}/scb/reveals/*"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = ["${aws_s3_bucket.content.arn}/scb/keys/master-data-key.v1"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = ["${aws_s3_bucket.content.arn}/scb/keys/master-data-key.v1"]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["kms:GenerateDataKeyWithoutPlaintext"]
+        Resource = aws_kms_key.master_secret.arn
       },
       {
         Effect   = "Allow"
@@ -311,8 +362,28 @@ resource "aws_launch_template" "parent" {
     associate_public_ip_address = true
     security_groups             = [aws_security_group.parent.id]
   }
-  user_data = base64encode(templatefile("${path.module}/parent-user-data.sh.tftpl", {
-    max_runtime_hours = var.max_runtime_hours
+  # The broker bootstrap exceeds EC2's 16 KiB raw user-data limit. Cloud-init
+  # accepts a gzip payload; the launch template still requires base64 encoding.
+  user_data = base64gzip(templatefile("${path.module}/parent-user-data.sh.tftpl", {
+    max_runtime_hours     = var.max_runtime_hours
+    aws_region            = var.aws_region
+    storage_bucket        = aws_s3_bucket.content.bucket
+    storage_owner         = data.aws_caller_identity.current.account_id
+    enclave_eif_s3_key    = var.enclave_eif_s3_key
+    enclave_eif_sha384    = var.enclave_eif_sha384
+    master_key_arn        = aws_kms_key.master_secret.arn
+    key_broker_gzip       = base64gzip(file("${path.module}/../../nitro/key_broker.py"))
+    protocol_gzip         = base64gzip(file("${path.module}/../../nitro/protocol.py"))
+    parent_proxy_gzip     = base64gzip(file("${path.module}/../../nitro/parent_proxy.py"))
+    storage_broker_gzip   = base64gzip(file("${path.module}/../../nitro/storage_broker.py"))
+    storage_protocol_gzip = base64gzip(file("${path.module}/../../nitro/storage_protocol.py"))
+    enclave_download_gzip = base64gzip(templatefile("${path.module}/../../nitro/download_eif.py", {
+      storage_bucket_owner = data.aws_caller_identity.current.account_id
+      storage_bucket       = aws_s3_bucket.content.bucket
+      enclave_eif_s3_key   = var.enclave_eif_s3_key
+      enclave_eif_sha384   = var.enclave_eif_sha384
+      aws_region           = var.aws_region
+    }))
   }))
 
   enclave_options { enabled = true }

@@ -7,6 +7,7 @@ use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use zeroize::Zeroizing;
 
 /// The four chain-visible values the enclave cross-checks on /internal/verify.
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
@@ -72,7 +73,7 @@ impl TokenBucket {
 
 pub struct AppState {
     cfg: Config,
-    master_secret: [u8; 32],
+    master_secret: Zeroizing<[u8; 32]>,
     verdict_key: SigningKey,
     submissions: Arc<dyn crate::submission_store::SubmissionStore>,
     /// Exactly one sandbox may execute at a time, including direct API calls.
@@ -90,7 +91,7 @@ fn now_unix() -> u64 {
 
 impl AppState {
     pub fn new(cfg: Config) -> Self {
-        let master_secret = cfg.master_secret;
+        let master_secret = cfg.master_secret.clone();
         let verdict_key = SigningKey::from_bytes(&flag::derive_verdict_seed(&master_secret));
         let submissions = cfg.submission_store.clone();
         Self {

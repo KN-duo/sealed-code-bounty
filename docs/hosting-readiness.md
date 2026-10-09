@@ -5,9 +5,19 @@ website that works from other computers, AWS TEE execution for authorized CTF
 challenges, fewer than ten concurrent users, and a **$2/month maximum**. There
 is no requirement to buy a VPS or keep the website on AWS.
 
-The application is not deployed: there is no public website/API, devnet or
-mainnet program, or AWS resource. The previously generated AWS staging plan is
-not suitable for this monthly budget. No resources were created for this review.
+An isolated public project preview is live at
+https://sealed-code-bounty-preview.pages.dev/. There is still no operational
+bounty website/API, devnet or mainnet program, or AWS project resource. The
+refreshed AWS plan is not a working verifier deployment and has not been applied.
+
+An isolated static public-preview build is now available with
+`cd frontend && npm run build:preview`. It deliberately contains no RPC,
+program ID, or verifier endpoint and displays a notice that CTF actions are not
+live. It is a project introduction only, not the operational bounty frontend.
+It was published to the Cloudflare Pages Free service on 2026-10-09. A live
+HTTPS check returned 200 and the configured security headers. This preview
+build does not provide the app's `/enclave` or `/workspace-api` services; no
+operational verifier API is online.
 
 ## Current behavior
 
@@ -20,7 +30,7 @@ not suitable for this monthly budget. No resources were created for this review.
 | Relayer queue and retry state | In-memory retry state reconstructed from pending on-chain submissions at startup and periodically | Recovery and unchanged-job backoff are tested. Retry counters reset on relayer restart; chain state remains the source of truth. |
 | Submission slot | One pending submission per bounty, enforced on chain | Ten people may browse one bounty; ten submissions to that bounty cannot all be accepted at once. Multiple bounties can have pending jobs. |
 | Rate limits | Default five uploads/hour per wallet and per peer IP | The loopback proxy collapses all clients to one peer IP. Public deployment needs wallet limits plus a correctly authenticated edge IP limit. Do not trust arbitrary forwarded headers. |
-| Sandbox and key bootstrap | Docker/stub runner; plaintext development environment keys | Enclave-native sandbox, attestation, KMS release, measured EIF, and their denial/release proofs remain incomplete. |
+| Sandbox and key bootstrap | Release selects Podman and attested KMS bootstrap; plaintext environment keys require an explicit development feature | Development EIF, nonce-bound NSM endpoint and independent operator verifier exist. Nitro isolation, live attestation/KMS denial and release, browser attestation checks and clean release remain incomplete. |
 | Nitro transport | Parent uses threads; enclave proxy forwards one request at a time | A long verification can block uploads/health through the proxy even though the Rust API stays responsive. Bound transport concurrency separately from execution concurrency. |
 | Buyer decryption keys | Browser session storage plus user backup export/import | Using a different PC requires restoring the buyer key backup as well as connecting the wallet. Never solve this by putting private buyer keys into a server database. |
 | Practice terminals | Local development workspace service | Public authenticated terminal routing, per-user ownership, quotas, and cleanup are not implemented. Keep this optional feature unavailable in the first hosted CTF session. |
@@ -44,8 +54,10 @@ test. No throughput, high availability, or TEE confidentiality claim follows.
    ability to decrypt previously uploaded submissions.
 4. Start one **Nitro parent only for an operator-scheduled session**, initially
    one one-hour session per month. Terraform creates a launch template, not an
-   EC2 instance. The start script reserves a monthly session marker and the
-   instance has an early termination timer. This script guard is not an
+   EC2 instance. The start script reserves a monthly session marker; an AWS
+   workflow owns launch and delayed termination, and the instance has an early
+   termination timer. The workflow has passed definition validation but has not
+   run against EC2. These guards are not an
    account-level spending cap. Verify one job at a time; cap queued work to fit the session
    and the on-chain unlock deadline. Show availability before accepting a bond.
 5. Publish the API over authenticated HTTPS during sessions. Route only browser
@@ -75,12 +87,17 @@ incompatible with the current Nitro parent design.
 
 ## Cost boundary
 
-The earlier live AWS price lookup for `m6i.xlarge` in Stockholm was $0.204/hour;
-public IPv4 adds $0.005/hour. One one-hour session therefore uses about
-**$0.209** in compute/address charges. One retained customer-managed KMS key is
-**$1/month**, leaving about **$0.791** of the $2 for brief EBS use, retained
-objects, requests, logging, and taxes. This is a preliminary allowance, not a
-guaranteed all-in quote. The build/bootstrap time counts as running time too.
+The AWS Price List API returned **$0.204/hour** for Linux `m6i.xlarge` in
+`eu-north-1` (effective 2026-10-01). Public IPv4 is **$0.005/hour**. The
+configured 40 GiB gp3 root volume is **$0.0836/GiB-month**, or about $0.0046
+for one hour. That is about **$0.214 for a one-hour run**, plus one retained
+customer-managed KMS key at **$1/month**: approximately **$1.214/month** for
+one such session before S3, log ingestion, transfer, and taxes. Automatic
+rotation is disabled because AWS charges an extra $1/month for each of the
+first two customer-managed-key rotations. Manual replacement/re-pinning must
+be planned with budget headroom. AWS Budgets alerts at $0.80 actual and $1
+forecast but are not a hard cap, so this remains an estimate rather than a
+spending guarantee. Build and bootstrap time counts as running time too.
 
 At 730 running hours the same compute/address pair would be about $152.57/month,
 before disk, KMS and other services. Even stopped, the old 40 GiB gp3 root volume
@@ -120,9 +137,10 @@ Verification has advanced since the initial concurrency review: the latest
 recorded runner suite passed 72 tests and Clippy with warnings denied; relayer
 and CLI each passed 12 tests; Anchor passed 29 localnet tests; frontend lint and
 build passed. A real local binary boot and ten parallel health requests passed
-using the stub sandbox. These checks prove local API behavior only; no real
-Docker V5 run, enclave, or ten-job workload was tested. Docker, Nitro CLI,
-Terraform, and AWS CLI are absent from the current machine.
+using the stub sandbox. These checks prove local API behavior only; no enclave
+or ten-job workload was tested. Docker is available with elevated local daemon
+access; Terraform/AWS access is available for read-only planning. Nitro CLI
+v1.5.1 was built in `/tmp`, and only a throwaway EIF CLI smoke test has run.
 
 Manifest/environment verification, V5 manifest binding, and bounded exploit
 ZIP handling are implemented and locally tested. Remaining gates include
@@ -133,8 +151,14 @@ mainnet canary. See `DEPLOYMENT-HANDOFF.md` for the sequence.
 
 ## Sources checked
 
+- AWS Price List API read-only lookup, `eu-north-1`: Linux `m6i.xlarge`
+  $0.204/hour and gp3 `EUN1-EBS:VolumeUsage.gp3` $0.0836/GiB-month,
+  effective 2026-10-01 (queried 2026-10-09).
+- [AWS EC2 pricing guidance](https://docs.aws.amazon.com/prescriptive-guidance/latest/optimize-costs-microsoft-workloads/right-size-selection.html)
 - [AWS EC2 lifecycle and idle billing](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-lifecycle.html)
 - [AWS KMS pricing](https://aws.amazon.com/kms/pricing/)
+- [AWS VPC public IPv4 pricing](https://aws.amazon.com/vpc/pricing/)
+- [AWS EBS pricing](https://aws.amazon.com/ebs/pricing/)
 - [AWS Nitro Enclaves requirements](https://docs.aws.amazon.com/enclaves/latest/user/nitro-enclave.html)
 - [Cloudflare Pages pricing](https://developers.cloudflare.com/pages/functions/pricing/)
 - [Cloudflare Pages Git integration](https://developers.cloudflare.com/pages/get-started/git-integration/)

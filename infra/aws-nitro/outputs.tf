@@ -33,6 +33,11 @@ output "parent_max_runtime_hours" {
   description = "Boot-relative termination timer configured in the parent launch template."
 }
 
+output "termination_workflow_arn" {
+  value       = aws_sfn_state_machine.termination.arn
+  description = "AWS-managed termination workflow that must be armed before starting EC2."
+}
+
 output "parent_instance_name" {
   value       = "${local.name}-nitro-parent"
   description = "Unique tag queried by the bounded session start/termination scripts."

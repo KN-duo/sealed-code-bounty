@@ -24,8 +24,106 @@ runbook. Mainnet is not a substitute for the staging/security gates below.
 - [ ] Add public HTTPS frontend/API configuration and an explicit offline state.
 - [~] Revise infrastructure for terminated session compute, durable keys/objects,
   and a bounded runtime allowance within the $2 monthly design target. It is
-  not a hard account-level spending cap; the refreshed read-only plan still
-  requires cost and launch review.
+  not a hard account-level spending cap. The current read-only plan has the PCR
+  placeholder and must not be applied.
+
+## Active work: TEE first, preserve the existing CTF workflow
+
+Next launch preparation:
+
+- [x] Add an AWS-managed workflow owning launch, wait and termination, with
+  tag-restricted permissions and per-session identity independent of bootstrap.
+- [x] Wire session startup to the workflow; preserve monthly reservation and
+  numeric launch-template pinning. Live launch/termination proof remains open.
+- [x] Lock exploit-runtime Python dependencies and image/OS build inputs.
+- [~] Build the Rust runner and KMS helper with pinned compilers/offline compile,
+  then assemble the locked-component EIF and record fresh measurements. The
+  pinned/offline Rust runner build passed; KMS helper assembly is still running.
+- [ ] Compile/validate affected source and refresh the read-only resource plan;
+  document remaining clean-release and real-hardware gates without applying.
+
+Current continuation:
+
+- [x] Add a bounded nonce-challenge NSM attestation endpoint binding the upload
+  encryption key, verdict key, build commit, and SCB_VERDICT_V5 protocol.
+- [x] Add an independent verifier pinned to the official AWS root, checking
+  certificate chain, COSE signature, freshness, nonce, PCR and both public keys.
+- [x] Embed source identity during EIF builds and record structured provenance.
+- [x] Compile the affected code and update the handoff with exact remaining
+  launch gates; retain all original CTF application routes.
+
+Review: the new development EIF and provenance are at
+`/tmp/scb-attestation-dev.eif` and `.eif.provenance.json`. PCR0 is recorded in
+the handoff; this dirty development artifact is not approved for KMS. Rust
+release/development compilation and library/binary Clippy pass, Python/shell
+syntax checks pass, and Terraform validates. No tests were added/run in this
+continuation and no AWS resources/programs were deployed. The independent
+verifier is installed in `/tmp/scb-attestation-venv` but has no real AWS proof.
+The refreshed plan is `/tmp/scb-staging-attestation-20261009.tfplan`; it still
+has 21 additions, no EC2 instance and placeholder PCR/file digest. Explicit KMS
+decrypt and re-encryption denials are in the draft policy. The oversized
+bootstrap is now gzip-compressed before launch-template base64 encoding. Next: clean release
+dependency locking/provenance, independent runtime termination backstop,
+adversarial verification, then approved hardware staging.
+
+Newer launch preparation review: AWS login revalidated; read-only plan
+`/tmp/scb-staging-backstop-20261009.tfplan` has 24 additions, no changes/deletions
+and no EC2 instance. Terraform validation and AWS Step Functions definition
+validation passed (future resource IDs substituted for syntax validation).
+Workflow-owned launch fixes the separate-launch timer race. Runtime and enclave
+OS locks built successfully, and the pinned/offline Rust runner binary built.
+No cloud resources were created. Live IAM, shutdown, Nitro/KMS, reproducibility,
+and complete nonempty-bucket teardown are unproven.
+
+- [x] Confirm the existing main application routes remain intact: bounty board,
+  bounty creation, bounty details, hunter exploit upload, manage/reveal, CLI
+  packaging/submission, Rust verification, and on-chain settlement sources are
+  present. Public preview is a separate `frontend/preview/` entry point.
+- [x] Add a domain-separated HKDF derivation for the enclave upload-decryption
+  key, so the eventual attested KMS master can supply both stable enclave keys.
+  `cargo check --locked` passes; no AWS key or account resource was changed.
+- [x] Zeroize the derived flag's base58 bytes and `FlagString` contents when
+  their Rust owners drop. The release runner and opt-in development feature
+  compile after the change.
+- [x] Add a fail-closed release runner startup path: release builds disable
+  plaintext secret environment input and request a 32-byte KMS key via the
+  parent bootstrap client. Add a fixed-key parent broker that creates the key
+  with `GenerateDataKeyWithoutPlaintext` and stores only ciphertext in S3.
+  The development-feature and default release-profile Rust builds compile.
+  The Nitro vsock/KMS path has not been run on hardware.
+- [ ] Replace the enclave's environment-supplied master/encryption keys with
+  attestation-gated KMS bootstrap end to end; keep explicit local-development
+  support separate from release builds. The local helper and IAM wiring exist,
+  but the parent service deployment and Nitro flow still need integration.
+- [ ] Replace the enclave Docker-daemon dependency with a reviewed native
+  process sandbox while retaining Dockerfile-based CTF authoring and the hunter
+  ZIP upload/verify/payout/reveal workflow.
+- [~] Prototype daemonless Podman execution for release builds: per-run
+  internal networks, per-container user namespaces, dropped capabilities,
+  exploit read-only rootfs/no-new-privileges, and AF_VSOCK seccomp denial.
+  The exploit no longer mounts the flag workspace. Release builds reject
+  Docker and the stub. This compiles, but is not accepted as enclave-ready:
+  The candidate image includes Podman, runtime bundle and subuid configuration,
+  and a development EIF has been built. Isolation has not been reviewed or run
+  under Nitro; do not treat local Docker checks as hardware proof.
+- [~] Build a dedicated pinned verifier image and EIF recipe, including the
+  KMS CLI and enclave vsock entrypoint; development measurements and provenance
+  exist. OS/runtime dependencies are locked and built; pinned compiler/helper
+  integration, a clean reviewed release and reproducibility remain open.
+- [ ] Verify on an approved Nitro host: wrong-PCR KMS denial, approved-PCR
+  secret release, independent attestation verification, then synthetic PASS,
+  FAIL, timeout, restart, recovery, and force-unlock.
+- [ ] Deploy public API routing only after the enclave execution and ingress
+  paths are implemented and the full plan/cost/teardown have been reviewed.
+
+Planning basis: AWS documents that enclaves lack network access and use
+`vsock-proxy` plus `kmstool-enclave-cli` for attested KMS requests. The current
+release runner can now bootstrap the KMS master without plaintext secret
+environment variables, and the launch template installs the parent brokers.
+Those source changes have not been exercised on Nitro. The Podman executor is
+only a candidate enclave-native implementation; it still needs an actual EIF
+and kernel/runtime validation. Do not create AWS resources until the EIF, PCR,
+bounded cost, and approval gates are ready.
 
 ## Completed locally: durable submissions and recovery
 
@@ -136,6 +234,51 @@ as complete without the user's specific approval or the actual third-party work.
   and target overrides, fetches fixed S3 keys in bounded chunks, hashes the
   complete files, then applies verified manifest limits. Binary stdio targets
   return explicit 501 until implemented. These are local tests, not Nitro proof.
+- Rust local executor review: the verified flag was not being staged at the
+  target's `/flag-src/flag` mount. Added a private per-run `FlagWorkspace`
+  (0600 file, overwrite-on-drop) and an API regression check for its cleanup.
+  Also made exploit stdout/stderr drain concurrently with a 512 KiB per-stream
+  capture bound so a noisy process cannot block on full pipes or grow memory
+  without bound. Full `cargo test --locked --offline`: 73 passed, one explicit
+  Docker test ignored by default; Clippy with `-D warnings` passed.
+- Explicit local Docker smoke: `cargo test --locked --offline --test live_docker
+  -- --ignored --nocapture` passed against cached `scb-target` and `scb-runtime`.
+  The real Rust `DockerCli` ran the ret2win exploit and recovered the synthetic
+  per-run flag. Local Docker's seccomp blocked `setarch -R`, so this static/no-PIE
+  smoke disabled ASLR wrapping. It does not prove AWS Nitro execution or a full
+  chain settlement cycle.
+- Pulled-change verification: relayer 12 tests; CLI 12 tests; frontend deploy
+  preflight, lint and production build pass; 66 Python broker/publisher/session
+  tests pass; Terraform fmt/init/validate pass; `anchor build --ignore-keys`
+  and a sequential `anchor test --skip-build --validator legacy` pass (29/29).
+  The earlier overlapping Anchor build/test run failed and was discarded; the
+  sequential run confirms those failures were caused by the shared build race.
+- Current machine has Docker, Anchor, AWS CLI, and Terraform 1.16.5 in
+  `/tmp/scb-tools/terraform`; `nitro-cli` is being built from pinned AWS v1.5.1
+  source under `/tmp`. AWS read-only
+  identity was revalidated on 2026-10-09 for account `172873868884` in
+  `eu-north-1`. Docker CLI needs elevated access to its local daemon socket.
+  No apply or cloud deployment was run.
+- TEE key bootstrap implementation 2026-10-09: release runner built with
+  `cargo build --release --locked --no-default-features`. It requests the
+  master key from the new parent vsock broker, then uses the KMS enclave CLI
+  against the parent's KMS-only vsock proxy. Master bytes are held in
+  `Zeroizing`; the upload-decryption key is HKDF-derived. The EC2 launch
+  template includes the fixed-key S3/KMS broker services and role permissions.
+  Only source/build compilation is complete; the EIF, PCR gate, native sandbox,
+  AWS deployment, and attested release proof remain open.
+- Sandbox continuation 2026-10-09: removed the exploit container's bind mount
+  of the per-run flag directory after finding that it could read the actual
+  flag directly. The target alone receives the read-only flag mount. Changed
+  sandbox network creation to unique per-run internal networks with cleanup,
+  and prepared temporary bind-mount permissions for Podman's per-container
+  subordinate UID maps. Release config now rejects Docker and the stub. Ran
+  `cargo build --release --locked`, `cargo check --locked --all-targets`, and
+  `cargo test --locked --test shim_docker` (6 passed). The test shim does not
+  execute Podman. Podman/Nitro runtime behavior is unverified; no EIF or AWS
+  resources exist. Terraform formatting and validate pass with elevated local
+  execution. A fresh read-only plan has 21 additions, 0 changes, 0 deletions,
+  no EC2 instance, and the deny-all PCR placeholder. It is unsafe to apply.
 - Closed the manifest substitution seam with SCB_VERDICT_V5. The 239-byte
   signed wire includes `manifest_sha256`; the program derives it from its Bounty
   account, and the runner signs the hash it fetched and verified. Added a
@@ -327,3 +470,34 @@ The runtime and confidentiality gates remain open.
   lint and ordinary frontend build also pass. Vite still reports its existing
   browser crypto/stream externalization and large-bundle warnings. No live
   endpoint was contacted and no deployment was performed.
+- Public preview preparation 2026-10-09: added isolated `frontend/preview/`
+  build path (`npm run build:preview`) with a read-only project intro, explicit
+  no-CTF/no-TEE state, restrictive Cloudflare Pages headers, and no runtime
+  RPC/program/verifier configuration in the built bundle. Build and config scan
+  passed. Wrangler device authorization succeeded. Created the direct-upload
+  Pages project `sealed-code-bounty-preview` and published the preview to
+  https://sealed-code-bounty-preview.pages.dev/. Wrangler reports Production,
+  branch `main`; HTTPS returned 200 and the configured security headers.
+- AWS CLI login revalidated for account `172873868884` in `eu-north-1`.
+  Cost Explorer reports approximately $0.00 for October through Oct 9; no
+  project-tagged EC2, project-prefixed KMS alias, or project-prefixed S3 bucket
+  was found. Refreshed read-only Terraform plan: 21 create, 0 update, 0 delete;
+  no EC2 instance. It retains the all-`f` PCR deny-all placeholder, so it
+  cannot launch a functional TEE service. Plan saved only under `/tmp` and not
+  applied.
+- TEE build continuation: built AWS Nitro CLI v1.5.1 and AWS SDK C v0.4.2 KMS
+  helper/NSM API v0.4.0 from pinned sources. The app image packages Podman 4.9.3,
+  netavark with iptables-legacy (the pinned Nitro 4.14 kernel lacks nftables),
+  the release runner, KMS helper, and embedded exploit runtime. A dev-only EIF
+  was built at `/tmp/scb-candidate-dev.eif` from the dirty worktree; PCR0 is
+  `ac126e068b424c0e462835972194c1f0d84cc2f12170f55ca358018ad492687c1d4e2213b85a17c7b89179279ee4d1b1`
+  and file SHA-384 is
+  `6f4fa3fecd367c25a0a28857aefefdc6c6bed636f30e9d49bcfdbf7652eb0118f78d39cc95fe9517ac563863c22dd1b7`.
+  Podman imported the runtime and created an internal network in a disposable
+  local container. This does not prove Nitro boot, runner execution, attestation,
+  or KMS release. Do not pin/deploy this dirty-worktree EIF.
+- Added Terraform EIF S3 key/digest settings, digest-checked parent download,
+  and enclave launch systemd unit. `terraform validate` passed; refreshed plan
+  remains 21 additions, no running instance, all-`f` PCR and all-zero EIF digest.
+  It is saved at `/tmp/scb-staging-reviewed-20261009.tfplan`; no apply, upload,
+  or AWS resource creation occurred.

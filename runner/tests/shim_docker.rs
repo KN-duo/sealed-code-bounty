@@ -64,9 +64,11 @@ fn exploit_args_carry_network_mounts_and_optional_setarch() {
 
     let off = params(rootfs, work, true);
     let a = exploit_run_args(&off, "x86_64", "scb/exploit-runtime:test");
+    assert!(a.contains(&"--pull=never".to_string()));
     let idx = |v: &str| a.iter().position(|x| x == v).expect(v);
     assert_eq!(a[idx("--network") + 1], "scb-loopback");
-    assert!(a.iter().any(|x| x.ends_with("/srv:ro")));
+    assert!(!a.iter().any(|x| x.ends_with("/srv:ro")));
+    assert!(!a.iter().any(|x| x.ends_with("/flag-src:ro")));
     assert!(a.iter().any(|x| x.ends_with(":/work:ro")));
     assert!(a.contains(&"SEED=0".to_string()));
     assert!(a.contains(&"TARGET_HOST=target".to_string()));
@@ -102,6 +104,7 @@ fn target_args_carry_alias_internal_net_and_boot_script() {
     let p = params(rootfs, work, true);
     let a = target_run_args("scb-target-x", "scb/target:test", &p, "x86_64");
     assert!(a.contains(&"-d".to_string()));
+    assert!(a.contains(&"--pull=never".to_string()));
     let iname = a.iter().position(|x| x == "--name").unwrap();
     assert_eq!(a[iname + 1], "scb-target-x");
     let npos = a.iter().position(|x| x == "--network-alias").unwrap();
@@ -218,6 +221,7 @@ async fn shim_happy_path_runs_exploit_and_returns_flag_line() {
     );
     assert!(net < detached && detached < exploit);
     assert!(exploit < find("rm scb-exploit"));
+    assert!(find("network-remove") > find("rm scb-target"));
     void(rm_target);
     fn void<T>(_: T) {}
 }

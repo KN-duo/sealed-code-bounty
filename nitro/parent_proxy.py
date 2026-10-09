@@ -18,6 +18,7 @@ MAX_HTTP_BODY = 6 * 1024 * 1024
 ALLOWED_PATHS = {
     "/internal/healthz", "/internal/enclave-pubkey", "/internal/operator-pubkey",
     "/internal/seal_bounty", "/internal/upload", "/internal/verify",
+    "/internal/attestation",
 }
 
 

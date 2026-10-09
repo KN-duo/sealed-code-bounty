@@ -1,0 +1,21 @@
+{
+  "schema": "scb-kms-sources-v1",
+  "base_image": "public.ecr.aws/ubuntu/ubuntu@sha256:5ce7043d3beb84e91bfeecacb5fafc80602bf247a1dd6016bc0fe7d69d707eca",
+  "rust_version": "1.85.0",
+  "rust_archive_sha256": "6f8b323ed2a34ccf0031631b85d79e1133da662094566bc910432da9bd3a5b42",
+  "source_date_epoch": 1700000000,
+  "sources": [
+    {"name": "aws-lc", "url": "https://github.com/awslabs/aws-lc.git", "commit": "cb7712dfa896d32d55992e2cb13d5fa54fb77002", "release": "v1.12.0"},
+    {"name": "s2n-tls", "url": "https://github.com/aws/s2n-tls.git", "commit": "e954ee5dc878c5c343d35574e7d07246a1e59314", "release": "v1.3.46"},
+    {"name": "aws-c-common", "url": "https://github.com/awslabs/aws-c-common.git", "commit": "be35e65a6c67ae2ffd126516c9783ac1dd2e8910", "release": "v0.8.0"},
+    {"name": "aws-c-sdkutils", "url": "https://github.com/awslabs/aws-c-sdkutils.git", "commit": "e3c23f4aca31d9e66df25827645f72cbcbfb657a", "release": "v0.1.2"},
+    {"name": "aws-c-cal", "url": "https://github.com/awslabs/aws-c-cal.git", "commit": "1458c70a26877345ca28e333a092096afd410774", "release": "v0.5.18"},
+    {"name": "aws-c-io", "url": "https://github.com/awslabs/aws-c-io.git", "commit": "8f4508f5ec7d2949d5545e2b1ddcd1beb47a76a8", "release": "v0.11.0"},
+    {"name": "aws-c-compression", "url": "https://github.com/awslabs/aws-c-compression.git", "commit": "5fab8bc5ab5321d86f6d153b06062419080820ec", "release": "v0.2.14"},
+    {"name": "aws-c-http", "url": "https://github.com/awslabs/aws-c-http.git", "commit": "0600662610aa871a11aebe6ed67a11997317cbef", "release": "v0.7.6"},
+    {"name": "aws-c-auth", "url": "https://github.com/awslabs/aws-c-auth.git", "commit": "831fa583b83574db29cbae139b42e0d7a1d1ebb8", "release": "v0.6.15"},
+    {"name": "json-c", "url": "https://github.com/json-c/json-c.git", "commit": "2f2ddc1f2dbca56c874e8f9c31b5b963202d80e7", "release": "json-c-0.16-20220414"},
+    {"name": "aws-nitro-enclaves-nsm-api", "url": "https://github.com/aws/aws-nitro-enclaves-nsm-api.git", "commit": "4b851f3006c6fa98f23dcffb2cba03b39de9b8af", "release": "v0.4.0"},
+    {"name": "aws-nitro-enclaves-sdk-c", "url": "https://github.com/aws/aws-nitro-enclaves-sdk-c.git", "commit": "74a35c70b7b0b855cbb9773178a5c8c5ec405363", "release": "v0.4.2"}
+  ]
+}

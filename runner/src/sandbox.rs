@@ -19,8 +19,27 @@
 use async_trait::async_trait;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+use tokio::io::AsyncReadExt;
 
-#[derive(Debug)]
+const MAX_CAPTURE_PER_STREAM: usize = 512 * 1024;
+
+async fn drain_bounded<R: tokio::io::AsyncRead + Unpin>(mut stream: R) -> std::io::Result<Vec<u8>> {
+    let mut kept = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            break;
+        }
+        let remaining = MAX_CAPTURE_PER_STREAM.saturating_sub(kept.len());
+        kept.extend_from_slice(&chunk[..n.min(remaining)]);
+        // Continue draining after the cap so a noisy child cannot block on a
+        // full pipe. The verdict examines only this bounded prefix.
+    }
+    Ok(kept)
+}
+
+#[derive(Debug, Clone)]
 pub struct RunParams<'a> {
     /// Directory holding the unpacked environment rootfs copy (mounted ro).
     pub rootfs_dir: &'a Path,
@@ -151,6 +170,7 @@ pub fn target_run_args(name: &str, image: &str, p: &RunParams<'_>, machine: &str
     vec![
         "-d".into(),
         "--rm".into(),
+        "--pull=never".into(),
         "--name".into(),
         name.to_string(),
         "--network".into(),
@@ -186,6 +206,7 @@ pub fn exploit_run_args(p: &RunParams<'_>, machine: &str, runtime_image: &str) -
             .collect();
     }
     let mut args: Vec<String> = vec![
+        "--pull=never".into(),
         "--network".into(),
         p.target_network.clone(),
         "--memory".into(),
@@ -198,8 +219,6 @@ pub fn exploit_run_args(p: &RunParams<'_>, machine: &str, runtime_image: &str) -
         format!("TARGET_HOST={}", p.target_host),
         "-e".into(),
         format!("TARGET_PORT={}", p.target_port),
-        "-v".into(),
-        format!("{}:/srv:ro", p.rootfs_dir.display()),
         "-v".into(),
         format!("{}:/work:ro", p.work_dir.display()),
         "-w".into(),
@@ -215,23 +234,32 @@ pub fn exploit_run_args(p: &RunParams<'_>, machine: &str, runtime_image: &str) -
 // ---------------------------------------------------------------------------
 
 #[derive(Clone)]
-pub struct DockerCli {
-    pub docker: PathBuf,
+pub struct ContainerCli {
+    pub executable: PathBuf,
     pub runtime_image: String,
     pub network: String,
+    pub podman: bool,
+    pub seccomp_profile: Option<PathBuf>,
+    pub subuid_start: u32,
 }
 
-impl Default for DockerCli {
+/// Compatibility name used by local Docker development and existing callers.
+pub type DockerCli = ContainerCli;
+
+impl Default for ContainerCli {
     fn default() -> Self {
         Self {
-            docker: PathBuf::from("docker"),
+            executable: PathBuf::from("docker"),
             runtime_image: "scb/exploit-runtime:latest".to_string(),
             network: "scb-loopback".to_string(),
+            podman: false,
+            seccomp_profile: None,
+            subuid_start: 100_000,
         }
     }
 }
 
-impl DockerCli {
+impl ContainerCli {
     pub fn from_env() -> Result<Self, String> {
         let mut s = Self::default();
         if let Ok(img) = std::env::var("SCB_RUNTIME_IMAGE") {
@@ -243,12 +271,46 @@ impl DockerCli {
         Ok(s)
     }
 
+    pub fn podman_from_env() -> Result<Self, String> {
+        let mut s = Self {
+            executable: std::env::var_os("SCB_PODMAN_CLI")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from("podman")),
+            podman: true,
+            seccomp_profile: Some(
+                std::env::var_os("SCB_SECCOMP_PROFILE")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| PathBuf::from("/app/nitro/deny-vsock-seccomp.json")),
+            ),
+            subuid_start: std::env::var("SCB_PODMAN_SUBUID_START")
+                .unwrap_or_else(|_| "100000".into())
+                .parse()
+                .map_err(|_| "SCB_PODMAN_SUBUID_START must be an integer")?,
+            ..Self::default()
+        };
+        if let Ok(img) = std::env::var("SCB_RUNTIME_IMAGE") {
+            s.runtime_image = img;
+        }
+        if let Ok(net) = std::env::var("SCB_NETWORK") {
+            s.network = net;
+        }
+        Ok(s)
+    }
+
+    fn command(&self) -> tokio::process::Command {
+        let mut cmd = tokio::process::Command::new(&self.executable);
+        if self.podman {
+            cmd.args(["--storage-driver", "vfs"]);
+        }
+        cmd
+    }
+
     async fn run_capture(
         &self,
         args: &[String],
         timeout: Duration,
     ) -> Result<std::process::Output, SandboxError> {
-        let mut cmd = tokio::process::Command::new(&self.docker);
+        let mut cmd = self.command();
         cmd.args(args)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -261,30 +323,36 @@ impl DockerCli {
     }
 
     async fn rm_force(&self, name: &str) {
-        let _ = tokio::process::Command::new(&self.docker)
-            .args(["rm", "-f", name])
-            .output()
-            .await;
+        let _ = self.command().args(["rm", "-f", name]).output().await;
     }
 }
 
 #[async_trait]
-impl SandboxExecutor for DockerCli {
+impl SandboxExecutor for ContainerCli {
     async fn run_exploit(&self, p: &RunParams<'_>) -> Result<ExecOutcome, SandboxError> {
         use rand::RngCore;
         let uniq = format!("{:016x}", rand::rngs::OsRng.next_u64());
         let target_name = format!("scb-target-{uniq}");
         let exploit_name = format!("scb-exploit-{uniq}");
-        let machine = machine_of("amd64"); // host-arch assumption documented
+        let machine = machine_of("amd64"); // Nitro EIFs are built for x86_64.
 
-        // 1. Loopback-only fabric (audit M3). Ignore "already exists".
-        let net = net_create_args(&self.network);
-        let _ = self.run_capture(&net, Duration::from_secs(15)).await;
-
+        // 1. Create a per-verification internal network so concurrent requests
+        // cannot discover or connect to another challenge's target.
+        let network = format!("{}-{uniq}", self.network);
+        let mut run = p.clone();
+        run.target_network = network.clone();
         // Cleanup closure used on every exit path once containers may exist.
         async fn cleanup(cli: &DockerCli, exploit: &str, target: &str) {
             cli.rm_force(exploit).await;
             cli.rm_force(target).await;
+        }
+
+        async fn cleanup_network(cli: &DockerCli, network: &str) {
+            let _ = cli
+                .command()
+                .args(["network", "rm", network])
+                .output()
+                .await;
         }
 
         // 2. Materialise the target image when a tarball is supplied.
@@ -299,7 +367,11 @@ impl SandboxExecutor for DockerCli {
                     String::from_utf8_lossy(&out.stderr)
                 );
                 text.lines()
-                    .find_map(|l| l.strip_prefix("Loaded image: ").map(str::to_string))
+                    .find_map(|l| {
+                        l.strip_prefix("Loaded image: ")
+                            .or_else(|| l.strip_prefix("Loaded image(s): "))
+                            .map(str::to_string)
+                    })
                     .ok_or_else(|| {
                         SandboxError::Runtime("docker load did not report an image ref".into())
                     })?
@@ -312,16 +384,49 @@ impl SandboxExecutor for DockerCli {
             }
         };
 
+        if self.podman {
+            self.chown_for_user_namespace(p.rootfs_dir).await?;
+            self.chown_for_user_namespace(p.work_dir).await?;
+        }
+        let net = net_create_args(&network);
+        let network_out = self.run_capture(&net, Duration::from_secs(15)).await?;
+        if !network_out.status.success() {
+            return Err(SandboxError::Runtime(
+                "could not create isolated challenge network".into(),
+            ));
+        }
+
         // 3. Start target detached.
         let mut t_args: Vec<String> = vec!["run".to_string()];
-        t_args.extend(target_run_args(&target_name, &target_image, p, machine));
-        self.run_capture(&t_args, Duration::from_secs(60)).await?;
+        if self.podman {
+            t_args.extend(self.podman_hardening(false, false));
+        }
+        t_args.extend(target_run_args(&target_name, &target_image, &run, machine));
+        let target_out = match self.run_capture(&t_args, Duration::from_secs(60)).await {
+            Ok(out) => out,
+            Err(e) => {
+                cleanup(self, &exploit_name, &target_name).await;
+                cleanup_network(self, &network).await;
+                return Err(e);
+            }
+        };
+        if !target_out.status.success() {
+            cleanup(self, &exploit_name, &target_name).await;
+            cleanup_network(self, &network).await;
+            return Err(SandboxError::Runtime(
+                "could not start challenge target".into(),
+            ));
+        }
 
         // 4. Exploit container with hard wall-clock timeout. kill_on_drop is
         //    the belt; explicit start_kill+reap below is the suspenders
         //    (audit P1-2: timed-out runs must not leak containers).
-        let exploit_args = exploit_run_args(p, machine, &self.runtime_image);
-        let mut cmd = tokio::process::Command::new(&self.docker);
+        let mut exploit_args = Vec::new();
+        if self.podman {
+            exploit_args.extend(self.podman_hardening(true, true));
+        }
+        exploit_args.extend(exploit_run_args(&run, machine, &self.runtime_image));
+        let mut cmd = self.command();
         cmd.arg("run")
             .arg("--name")
             .arg(&exploit_name)
@@ -333,42 +438,124 @@ impl SandboxExecutor for DockerCli {
             Ok(c) => c,
             Err(e) => {
                 cleanup(self, &exploit_name, &target_name).await;
+                cleanup_network(self, &network).await;
                 return Err(SandboxError::Io(e));
             }
         };
-
-        let waited = tokio::time::timeout(Duration::from_secs(p.timeout_secs), child.wait()).await;
-
-        let (timed_out, _status) = match waited {
-            Err(_) => {
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                cleanup(self, &exploit_name, &target_name).await;
-                return Err(SandboxError::Timeout);
-            }
-            Ok(Ok(st)) => (false, Some(st)),
-            Ok(Err(e)) => {
-                cleanup(self, &exploit_name, &target_name).await;
-                return Err(SandboxError::Io(e));
-            }
+        let Some(stdout) = child.stdout.take() else {
+            let _ = child.start_kill();
+            cleanup(self, &exploit_name, &target_name).await;
+            cleanup_network(self, &network).await;
+            return Err(SandboxError::Runtime("exploit stdout pipe missing".into()));
         };
-
-        let out = child.wait_with_output().await.ok();
+        let Some(stderr) = child.stderr.take() else {
+            let _ = child.start_kill();
+            cleanup(self, &exploit_name, &target_name).await;
+            cleanup_network(self, &network).await;
+            return Err(SandboxError::Runtime("exploit stderr pipe missing".into()));
+        };
+        let stdout_task = tokio::spawn(drain_bounded(stdout));
+        let stderr_task = tokio::spawn(drain_bounded(stderr));
+        let _status =
+            match tokio::time::timeout(Duration::from_secs(p.timeout_secs), child.wait()).await {
+                Err(_) => {
+                    let _ = child.start_kill();
+                    let _ = child.wait().await;
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    cleanup(self, &exploit_name, &target_name).await;
+                    cleanup_network(self, &network).await;
+                    return Err(SandboxError::Timeout);
+                }
+                Ok(Err(error)) => {
+                    stdout_task.abort();
+                    stderr_task.abort();
+                    cleanup(self, &exploit_name, &target_name).await;
+                    cleanup_network(self, &network).await;
+                    return Err(SandboxError::Io(error));
+                }
+                Ok(Ok(status)) => status,
+            };
+        let stdout = stdout_task.await;
+        let stderr = stderr_task.await;
         cleanup(self, &exploit_name, &target_name).await;
-
-        if timed_out {
-            return Err(SandboxError::Timeout);
-        }
-        let mut text = out
-            .as_ref()
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
-            .unwrap_or_default();
-        if let Some(o) = &out {
-            text.push_str(&String::from_utf8_lossy(&o.stderr));
-        }
+        cleanup_network(self, &network).await;
+        let stdout = stdout
+            .map_err(|_| SandboxError::Runtime("exploit stdout collection failed".into()))?
+            .map_err(SandboxError::Io)?;
+        let stderr = stderr
+            .map_err(|_| SandboxError::Runtime("exploit stderr collection failed".into()))?
+            .map_err(SandboxError::Io)?;
+        let mut text = String::from_utf8_lossy(&stdout).into_owned();
+        text.push_str(&String::from_utf8_lossy(&stderr));
         Ok(ExecOutcome {
             output: text,
-            timed_out,
+            timed_out: false,
         })
+    }
+}
+
+impl ContainerCli {
+    fn podman_hardening(&self, read_only: bool, no_new_privs: bool) -> Vec<String> {
+        let mut args = vec![
+            "--cap-drop=all".into(),
+            format!("--uidmap=0:{}:65536", self.subuid_start),
+            format!("--gidmap=0:{}:65536", self.subuid_start),
+            "--pids-limit=64".into(),
+        ];
+        if no_new_privs {
+            args.push("--security-opt=no-new-privileges".into());
+        }
+        if let Some(profile) = &self.seccomp_profile {
+            args.push("--security-opt".into());
+            args.push(format!("seccomp={}", profile.display()));
+        }
+        if read_only {
+            args.push("--read-only".into());
+            args.push("--tmpfs".into());
+            args.push("/tmp:rw,nosuid,nodev,size=16m".into());
+        }
+        args
+    }
+
+    async fn chown_for_user_namespace(&self, path: &Path) -> Result<(), SandboxError> {
+        let owner = format!("{}:{}", self.subuid_start, self.subuid_start);
+        let output = tokio::process::Command::new("chown")
+            .arg("-R")
+            .arg("--no-dereference")
+            .arg(owner)
+            .arg(path)
+            .output()
+            .await
+            .map_err(SandboxError::Io)?;
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(SandboxError::Runtime(
+                "could not map the private run workspace into the sandbox".into(),
+            ))
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::{drain_bounded, MAX_CAPTURE_PER_STREAM};
+    use tokio::io::{duplex, AsyncWriteExt};
+
+    #[tokio::test]
+    async fn noisy_exploit_output_is_drained_but_memory_bounded() {
+        let (mut writer, reader) = duplex(8192);
+        let sender = tokio::spawn(async move {
+            let chunk = vec![b'A'; 8192];
+            for _ in 0..((MAX_CAPTURE_PER_STREAM / chunk.len()) + 4) {
+                writer.write_all(&chunk).await.unwrap();
+            }
+            writer.shutdown().await.unwrap();
+        });
+        let output = drain_bounded(reader).await.unwrap();
+        sender.await.unwrap();
+        assert_eq!(output.len(), MAX_CAPTURE_PER_STREAM);
+        assert!(output.iter().all(|b| *b == b'A'));
     }
 }

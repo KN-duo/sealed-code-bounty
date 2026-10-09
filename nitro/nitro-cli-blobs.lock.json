@@ -1,0 +1,15 @@
+{
+  "schema": "scb-nitro-blobs-v1",
+  "upstream": "https://github.com/aws/aws-nitro-enclaves-cli",
+  "commit": "770e7ccd504171c0e5ab2065b75249c9144fa896",
+  "version": "Nitro CLI 1.5.1",
+  "architecture": "x86_64",
+  "sha256": {
+    "bzImage": "210eda749c1308eb60671a579d24db5e8a3477cb7a247cf313c286b09fe2d857",
+    "bzImage.config": "9378dea490ed6c698c3d23b346ed08e49dae52d74a59cee2673b8a7b1951fc5b",
+    "cmdline": "10d7d9dd205d4596d45997d17434f26207525f129d171a51f9859b1af9f4a07a",
+    "init": "755e650b732777b798cb9ec243ee402bef4826f789cf01a1e453bb724207c005",
+    "linuxkit": "80306dccf1946df3a8fb3487eddba802f81f6ead2ee87d38d359ab416c4fe06a",
+    "nsm.ko": "48904e520db2541ca4378da29d85791749408febc81987ade56cc5c556bd90df"
+  }
+}

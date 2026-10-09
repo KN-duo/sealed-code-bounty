@@ -7,9 +7,11 @@ EC2 instance. A separately invoked session terminates after one hour and
 deletes its root volume. Only the KMS key and stored S3 objects remain between
 sessions. Terraform validation and a refreshed read-only plan passed (21
 additions, no EC2 instance, configured runtime one hour) on 2026-10-09. That
-plan was not applied. On the current machine Terraform and AWS CLI are absent;
-no AWS resources, EIF, or public API have been deployed. Full cost and launch
-review remain required before resources are created.
+plan was not applied. Terraform and AWS CLI are available for read-only
+inspection; AWS CLI access was reauthenticated on 2026-10-09. Nitro CLI v1.5.1
+and a dev-only application EIF were built locally, but no release EIF, AWS
+resources, or public API have been deployed. Full cost and launch review remain
+required before resources are created.
 
 This Terraform configuration prepares a launch template for one bounded
 `m6i.xlarge` Nitro parent in `eu-north-1`, private
@@ -22,10 +24,34 @@ while attached. The enclave has no network interface and its narrow parent
 proxy still needs to enforce service and URL allowlists before use.
 
 The Terraform KMS policy defaults to a nonmatching PCR0 placeholder. That
-placeholder deliberately denies enclave decrypt. After an EIF has been built
-and independently reviewed, put its real PCR0 into the local
-`staging.tfvars`, regenerate the plan, and review the policy diff. Never change
-the policy to allow un-attested parent decrypt.
+placeholder deliberately denies enclave decrypt. The parent launch unit also
+requires a configured EIF SHA-384 file digest and retrieves the EIF from the
+private `scb/runtime/` S3 prefix before starting it. After a release EIF has
+been built and independently reviewed, publish that exact object, put its PCR0
+and file digest into local `staging.tfvars`, regenerate the plan, and review the
+policy and user-data diffs. Never change the policy to allow un-attested parent
+decrypt.
+
+The key policy explicitly denies decrypt when the recipient PCR0 is absent or
+incorrect, including callers with broad account IAM permissions, and denies
+re-encryption to prevent moving the stored data key to a less restricted KMS
+key. The separate administration permission can still change key policy;
+administrative policy changes remain a reviewed trust boundary. These denials
+have not yet been demonstrated with live KMS calls.
+
+The launch template now installs a fixed-purpose key broker and the parent
+storage/API vsock brokers. On first enclave request, the key broker uses
+`GenerateDataKeyWithoutPlaintext`, then stores only the returned KMS ciphertext
+at `scb/keys/master-data-key.v1` with a conditional S3 write. It passes the
+ciphertext and temporary instance-profile credentials over vsock; the enclave
+uses `kmstool_enclave_cli` through the KMS-only vsock proxy. Plaintext is
+released only by the attested KMS recipient path. This source and IAM wiring
+have not been run on Nitro hardware, and the PCR remains deny-all until a real
+EIF is reviewed.
+
+The entire bootstrap is gzip-compressed before launch-template base64 encoding
+to fit EC2's 16 KiB raw user-data limit. Cloud-init decompresses it on boot.
+The exact decoded compressed payload must be checked in the final launch plan.
 
 ## State and input handling
 
@@ -92,8 +118,11 @@ month** while retained. The customer-managed KMS key is **$1/month** while
 active (prorated hourly); KMS requests are separately metered.
 
 A one-hour run is approximately **$0.21** for compute and public IPv4, plus
-prorated gp3 and KMS charges, before S3, CloudWatch Logs, requests, and taxes.
-The KMS key remains about **$1/month** while active. Each additional running
+about **$0.0046** for the prorated root disk. With the **$1/month** KMS key,
+one such session is approximately **$1.214/month** before S3, CloudWatch Logs,
+requests, and taxes. Automatic KMS rotation is disabled because AWS charges an
+additional $1/month for each of the first two customer-managed key rotations.
+Replacing/re-pinning the key requires budget headroom. Each additional running
 hour adds about **$0.21**. The `$2` budget and its notifications are alerts, not
 a hard spending cap.
 
@@ -102,6 +131,22 @@ installation, then installs Nitro CLI and Docker and reserves 4 GiB and two
 CPUs for the enclave allocator. EC2 shutdown behavior is `terminate`, so the
 root volume is deleted. The timer is a backstop, not a substitute for immediate
 teardown.
+
+The draft Standard Step Functions workflow independently owns launch, waits
+the configured session duration, and requests termination. It pins the numeric
+launch-template version, accepts only a session token, and restricts IAM launch
+and cleanup to the intended project resources. Startup reserves the monthly
+S3 allowance before starting that workflow; it never calls RunInstances locally.
+Waits do not require an always-running server. Step Functions transition/request
+charges, launch/cleanup overhead and AWS service failures must still be included
+in the launch review. This workflow is validated configuration, not a proven
+live shutdown or account-level cap.
+
+Teardown disables new workflow launches and drains compute first. Versioned
+buckets have `force_destroy=false`; nonempty buckets require an explicit data
+retention/purge plan before complete foundation destruction. Retained KMS/S3
+resources can continue charging. Do not remove durable ciphertext/key material
+until its recovery/retention requirements have been reviewed.
 
 ## Terminate and destroy
 

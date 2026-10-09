@@ -14,6 +14,7 @@ RUNNER_PORT = int(os.environ.get("PORT", "8443"))
 TIMEOUT = float(os.environ.get("SCB_PROXY_TIMEOUT_S", "310"))
 ALLOWED = {
     ("GET", "/internal/healthz"),
+    ("POST", "/internal/attestation"),
     ("GET", "/internal/enclave-pubkey"),
     ("GET", "/internal/operator-pubkey"),
     ("POST", "/internal/seal_bounty"),

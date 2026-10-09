@@ -377,11 +377,6 @@ pub async fn verify(
     .map_err(|_| ApiError::Conflict("stored submission intent signature is invalid".into()))?;
 
     // ---- sandbox execution (typed Unsupported => HTTP 501) -----------------
-    let receipt_hex = &req.submission_receipt;
-    let rootfs_dir = state
-        .config()
-        .work_dir
-        .join(format!("rootfs-{receipt_hex}"));
     let mut environment = None;
     let mut manifest = None;
     if let Some(source) = &state.config().artifact_source {
@@ -426,6 +421,9 @@ pub async fn verify(
     };
     std::fs::create_dir_all(&state.config().work_dir)
         .map_err(|_| ApiError::Internal("could not prepare exploit workspace".into()))?;
+    // The target receives the per-bounty flag only through this private,
+    // per-verification mount. It is overwritten before the directory is removed.
+    let rootfs = FlagWorkspace::new(&state.config().work_dir, flag.expose_bytes())?;
     let zip_limits = crate::unpack::ExploitZipLimits::default();
     let mut exploit_workspace =
         crate::unpack::ExploitWorkspace::new(&state.config().work_dir, zip_limits.max_total_bytes)
@@ -434,7 +432,7 @@ pub async fn verify(
         .unpack_zip(&plaintext, &zip_limits)
         .map_err(|e| ApiError::BadRequest(format!("exploit ZIP rejected: {e}")))?;
     let run_params = RunParams {
-        rootfs_dir: &rootfs_dir,
+        rootfs_dir: rootfs.path(),
         work_dir: exploit_workspace.path(),
         exploit_entrypoint: &unpacked.entrypoint,
         env_blob_path,
@@ -516,6 +514,63 @@ pub async fn verify(
     }
 }
 
+struct FlagWorkspace {
+    directory: tempfile::TempDir,
+}
+
+impl FlagWorkspace {
+    fn new(parent: &Path, secret: &[u8]) -> Result<Self, ApiError> {
+        let directory = tempfile::Builder::new()
+            .prefix("scb-flag-")
+            .tempdir_in(parent)
+            .map_err(|_| ApiError::Internal("could not create private flag workspace".into()))?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(directory.path().join("flag"))
+            .map_err(|_| ApiError::Internal("could not create private flag file".into()))?;
+        use std::io::Write;
+        file.write_all(secret)
+            .and_then(|_| file.sync_all())
+            .map_err(|_| ApiError::Internal("could not write private flag file".into()))?;
+        // Use the same explicit private UID/GID mapping for each container so
+        // the target can read this bind mount without making it world-readable.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o700))
+            .and_then(|_| {
+                std::fs::set_permissions(
+                    directory.path().join("flag"),
+                    std::fs::Permissions::from_mode(0o400),
+                )
+            })
+            .map_err(|_| ApiError::Internal("could not prepare sandbox flag mount".into()))?;
+        Ok(Self { directory })
+    }
+
+    fn path(&self) -> &Path {
+        self.directory.path()
+    }
+}
+
+impl Drop for FlagWorkspace {
+    fn drop(&mut self) {
+        let path = self.directory.path().join("flag");
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        if let Ok(mut file) = std::fs::OpenOptions::new().write(true).open(path) {
+            use std::io::{Seek, SeekFrom, Write};
+            if let Ok(size) = file.metadata().map(|m| m.len().min(4096)) {
+                let zeros = [0u8; 4096];
+                let _ = file.seek(SeekFrom::Start(0));
+                let _ = file.write_all(&zeros[..size as usize]);
+                let _ = file.sync_all();
+            }
+        }
+    }
+}
+
 fn sign_verdict_b64(
     state: &AppState,
     cv: &crate::state::ChainViewBytes,
@@ -562,6 +617,10 @@ pub fn router(state: std::sync::Arc<AppState>) -> axum::Router {
     use axum::routing::{get, post};
     axum::Router::new()
         .route("/internal/healthz", get(healthz))
+        .route(
+            "/internal/attestation",
+            post(crate::attestation::attest).layer(axum::extract::DefaultBodyLimit::max(1024)),
+        )
         .route("/internal/seal_bounty", post(seal_bounty))
         .route("/internal/upload", post(upload))
         .route("/internal/verify", post(verify))

@@ -30,7 +30,7 @@ UNIT
 systemctl daemon-reload
 systemctl enable --now scb-auto-terminate.timer
 
-dnf install -y aws-nitro-enclaves-cli aws-nitro-enclaves-cli-devel amazon-cloudwatch-agent docker
+dnf install -y aws-nitro-enclaves-cli aws-nitro-enclaves-cli-devel amazon-cloudwatch-agent docker python3-boto3
 systemctl enable --now docker
 usermod -aG docker ec2-user
 
@@ -40,6 +40,154 @@ memory_mib: 4096
 cpu_count: 2
 YAML
 systemctl enable --now nitro-enclaves-allocator.service
+
+# The enclave can reach only the regional KMS endpoint through this allowlist.
+cat >/etc/nitro_enclaves/vsock-proxy.yaml <<'YAML'
+allowlist:
+  - {address: kms.${aws_region}.amazonaws.com, port: 443}
+YAML
+systemctl enable --now nitro-enclaves-vsock-proxy.service
+
+# Install the narrowly scoped fixed-key KMS bootstrap broker. It persists only
+# a KMS ciphertext; the enclave's recipient-attested KMS call receives plaintext.
+install -d -m 0755 /opt/scb/nitro
+printf '%s' '${key_broker_gzip}' | base64 -d | gzip -dc >/opt/scb/nitro/key_broker.py
+printf '%s' '${protocol_gzip}' | base64 -d | gzip -dc >/opt/scb/nitro/protocol.py
+printf '%s' '${parent_proxy_gzip}' | base64 -d | gzip -dc >/opt/scb/nitro/parent_proxy.py
+printf '%s' '${storage_broker_gzip}' | base64 -d | gzip -dc >/opt/scb/nitro/storage_broker.py
+printf '%s' '${storage_protocol_gzip}' | base64 -d | gzip -dc >/opt/scb/nitro/storage_protocol.py
+printf '%s' '${enclave_download_gzip}' | base64 -d | gzip -dc >/opt/scb/nitro/download_eif.py
+chmod 0555 /opt/scb/nitro/*.py
+cat >/etc/scb-key-broker.env <<'ENV'
+AWS_REGION=${aws_region}
+SCB_STORAGE_BUCKET=${storage_bucket}
+SCB_STORAGE_BUCKET_OWNER=${storage_owner}
+SCB_MASTER_KMS_KEY_ARN=${master_key_arn}
+SCB_ENCLAVE_CID=16
+SCB_KEY_VSOCK_PORT=5002
+ENV
+chmod 0600 /etc/scb-key-broker.env
+cat >/etc/systemd/system/scb-key-broker.service <<'UNIT'
+[Unit]
+Description=SealedCodeBounty fixed-purpose attested key bootstrap
+After=network-online.target nitro-enclaves-allocator.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/scb-key-broker.env
+ExecStart=/usr/bin/python3 /opt/scb/nitro/key_broker.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now scb-key-broker.service
+
+cat >/etc/scb-storage-broker.env <<'ENV'
+AWS_REGION=${aws_region}
+SCB_STORAGE_BUCKET=${storage_bucket}
+SCB_STORAGE_BUCKET_OWNER=${storage_owner}
+SCB_ENCLAVE_CID=16
+SCB_STORAGE_VSOCK_PORT=5001
+ENV
+chmod 0600 /etc/scb-storage-broker.env
+cat >/etc/systemd/system/scb-storage-broker.service <<'UNIT'
+[Unit]
+Description=SealedCodeBounty fixed-key S3 storage broker
+After=network-online.target nitro-enclaves-allocator.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/scb-storage-broker.env
+ExecStart=/usr/bin/python3 /opt/scb/nitro/storage_broker.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat >/etc/systemd/system/scb-parent-proxy.service <<'UNIT'
+[Unit]
+Description=SealedCodeBounty loopback HTTP to enclave proxy
+After=network-online.target nitro-enclaves-allocator.service
+Wants=network-online.target
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+Environment=SCB_ENCLAVE_CID=16
+Environment=SCB_VSOCK_PORT=5000
+Environment=SCB_PARENT_PORT=8443
+ExecStart=/usr/bin/python3 /opt/scb/nitro/parent_proxy.py
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
+systemctl enable --now scb-storage-broker.service scb-parent-proxy.service
+
+# Retrieve only the explicitly reviewed EIF, check its configured SHA-384, and
+# launch one fixed-CID enclave after its parent brokers are ready.
+cat >/etc/scb-enclave.env <<'ENV'
+SCB_EIF_S3_KEY=${enclave_eif_s3_key}
+SCB_EIF_SHA384=${enclave_eif_sha384}
+ENV
+chmod 0600 /etc/scb-enclave.env
+cat >/etc/systemd/system/scb-enclave.service <<'UNIT'
+[Unit]
+Description=SealedCodeBounty verified Nitro enclave
+After=nitro-enclaves-allocator.service nitro-enclaves-vsock-proxy.service scb-key-broker.service scb-storage-broker.service
+Requires=nitro-enclaves-allocator.service nitro-enclaves-vsock-proxy.service scb-key-broker.service scb-storage-broker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+StateDirectory=scb
+LogsDirectory=scb-nitro-cli
+EnvironmentFile=/etc/scb-enclave.env
+Environment=NITRO_CLI_LOGS_PATH=/var/log/scb-nitro-cli
+ExecStartPre=/usr/bin/python3 /opt/scb/nitro/download_eif.py
+ExecStart=/usr/bin/nitro-cli run-enclave --eif-path /var/lib/scb/verifier.eif --cpu-count 2 --memory 4096 --enclave-cid 16 --enclave-name scb-verifier
+ExecStop=/usr/bin/nitro-cli terminate-enclave --enclave-name scb-verifier
+TimeoutStartSec=5min
+TimeoutStopSec=30
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+systemctl daemon-reload
 
 cat >/opt/aws/amazon-cloudwatch-agent/etc/scb-staging.json <<'JSON'
 {
@@ -51,6 +199,11 @@ cat >/opt/aws/amazon-cloudwatch-agent/etc/scb-staging.json <<'JSON'
             "file_path": "/var/log/scb-bootstrap.log",
             "log_group_name": "/sealed-code-bounty/staging/parent",
             "log_stream_name": "{instance_id}/bootstrap"
+          },
+          {
+            "file_path": "/var/log/scb-nitro-cli/nitro_enclaves.log",
+            "log_group_name": "/sealed-code-bounty/staging/parent",
+            "log_stream_name": "{instance_id}/nitro-cli"
           }
         ]
       }
@@ -61,3 +214,6 @@ JSON
 /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
   -a fetch-config -m ec2 \
   -c file:/opt/aws/amazon-cloudwatch-agent/etc/scb-staging.json -s
+
+# Install logging before enclave startup so failed startup is still collected.
+systemctl enable --now scb-enclave.service

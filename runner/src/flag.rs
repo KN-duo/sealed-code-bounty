@@ -8,9 +8,10 @@
 
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
+use zeroize::Zeroizing;
 
 /// A secret flag string (32-byte HKDF output, base58-encoded). Not `Display`.
-pub struct FlagString(String);
+pub struct FlagString(Zeroizing<String>);
 
 impl std::fmt::Debug for FlagString {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -21,13 +22,13 @@ impl std::fmt::Debug for FlagString {
 impl FlagString {
     /// Wrap an already-derived flag. Callers: derivation + test fixtures only.
     pub fn from_raw(raw: String) -> Self {
-        Self(raw)
+        Self(Zeroizing::new(raw))
     }
 
     /// Deliberately awkward, clearly-marked accessor for the three legitimate
     /// consumers: rootfs injection, output scanning, commitment computation.
     pub fn expose(&self) -> &str {
-        &self.0
+        self.0.as_str()
     }
 
     /// Raw bytes of the base58 string (what hex/base64 encodings are built
@@ -39,6 +40,10 @@ impl FlagString {
 
 pub const FLAG_HKDF_INFO: &[u8] = b"scb-flag-v1";
 pub const VERDICT_KEY_HKDF_INFO: &[u8] = b"scb-verdict-key-v1";
+/// Domain separator for the stable X25519 key used to open hunter uploads.
+/// This lets production bootstrap one attested KMS secret and derive all
+/// enclave identities without provisioning a second plaintext secret.
+pub const ENCLAVE_ENC_KEY_HKDF_INFO: &[u8] = b"scb-enc-key-v1";
 
 fn hkdf_sha256(ikm: &[u8; 32], salt: &[u8], info: &[u8]) -> [u8; 32] {
     let hk = Hkdf::<Sha256>::new(Some(salt), ikm);
@@ -51,8 +56,8 @@ fn hkdf_sha256(ikm: &[u8; 32], salt: &[u8], info: &[u8]) -> [u8; 32] {
 /// Deterministic per-bounty flag: base58(HKDF-SHA256(M, salt=bounty_pda,
 /// info=b"scb-flag-v1")). Same M + same bounty ⇒ same flag across restarts.
 pub fn derive_flag(master_secret: &[u8; 32], bounty_pda: &[u8; 32]) -> FlagString {
-    let out = hkdf_sha256(master_secret, bounty_pda, FLAG_HKDF_INFO);
-    FlagString(bs58::encode(out).into_string())
+    let out = Zeroizing::new(hkdf_sha256(master_secret, bounty_pda, FLAG_HKDF_INFO));
+    FlagString::from_raw(bs58::encode(&*out).into_string())
 }
 
 /// Public sha256(flag) — safe to publish; committed on-chain at seal time.
@@ -66,6 +71,12 @@ pub fn flag_commitment(flag: &FlagString) -> [u8; 32] {
 /// M so enclave redeploys keep the same pinned operator identity.
 pub fn derive_verdict_seed(master_secret: &[u8; 32]) -> [u8; 32] {
     hkdf_sha256(master_secret, b"scb-runner", VERDICT_KEY_HKDF_INFO)
+}
+
+/// Stable X25519 secret for decrypting sealed hunter submissions. The public
+/// half is the key that must be attested and pinned in the on-chain config.
+pub fn derive_enclave_enc_seed(master_secret: &[u8; 32]) -> [u8; 32] {
+    hkdf_sha256(master_secret, b"scb-runner", ENCLAVE_ENC_KEY_HKDF_INFO)
 }
 
 #[cfg(test)]

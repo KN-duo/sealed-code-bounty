@@ -8,8 +8,18 @@ public authenticated ingress is implemented, so this is not a production TEE.
 **Do not use real submissions or production secrets here.** The environment
 secret variables below are development-only inputs; production must derive
 keys from an attestation-gated KMS release instead. The default sandbox is a
-typed stub that returns HTTP 501. Docker is opt-in and has not had a real
-PASS/FAIL run on the current machine.
+typed stub that returns HTTP 501. Release configuration selects daemonless
+Podman and rejects Docker or stub execution. That Podman path is source-level
+work only: the required enclave image/runtime bundle and Nitro validation are
+not yet available.
+
+The opt-in Cargo feature `dev-secrets` exists for local development. It is
+disabled by default. Production builds obtain the KMS ciphertext and temporary
+instance-profile credentials through `nitro/kms_bootstrap_client.py`, invoke
+`kmstool_enclave_cli` through the parent's KMS-only vsock proxy, and construct
+the runner from a zeroizing in-memory key. The upload-decryption key is
+derived with HKDF label `scb-enc-key-v1`. This source path compiles, but no EIF,
+KMS recipient-attestation release, or Nitro-host execution has been verified.
 
 ## Run
 
@@ -17,7 +27,7 @@ PASS/FAIL run on the current machine.
 SCB_MASTER_SECRET_HEX=$(openssl rand -hex 32) \
 SCB_ENCLAVE_ENC_SECRET_HEX=$(openssl rand -hex 32) \
 SCB_SUBMISSION_STORE=development-directory SCB_ALLOW_DEV_DIRECTORY_STORE=1 \
-PORT=8443 cargo run
+PORT=8443 cargo run --features dev-secrets
 ```
 
 Both secrets are required at startup; losing them only rotates flag/key
@@ -45,7 +55,7 @@ material, they never leave the process.
 | Immutable encrypted submission store with SHA-256 receipt, aggregate cap, and restart recovery | **REAL** locally via development directory; production uses the vsock helper and parent S3 broker |
 | Chain-view divergence check → HTTP 409, never guesses | **REAL** |
 | Verdict signing over exact 239-byte `SCB_VERDICT_V5` wire, including the on-chain manifest hash | **REAL locally**, golden-tested in `../test-vectors/verdict_v5.json`; this does not attest the signer |
-| Sandbox execution (`SandboxExecutor`) | **STUB by default**: `StubSandbox` answers typed `Unsupported` → HTTP 501. `SCB_SANDBOX=docker` selects `DockerCli`, which loads the verified target tarball or target image and runs it with the configured runtime image. The argument-array path is Docker-shim tested; a real Docker-backed PASS/FAIL run remains unverified in this workspace. |
+| Sandbox execution (`SandboxExecutor`) | Development defaults to typed `StubSandbox`; local Docker is opt-in. Release defaults to daemonless Podman with internal per-verification networks, private user namespaces, dropped capabilities, no-new-privileges/read-only exploit rootfs, and a seccomp rule denying AF_VSOCK. The Podman implementation has not been run here; no enclave image yet packages Podman, its subordinate-ID maps, the seccomp profile, or the exploit runtime image. |
 
 ## Threat-model notes (maps to BUILD_PLAN §8 checklist)
 
@@ -73,7 +83,9 @@ cargo test        # unit, HTTP integration, blob and Docker-shim suites
 cargo clippy --all-targets   # zero warnings expected
 ```
 
-Latest recorded local result (2026-10-09): 72 tests passed and Clippy passed
-with warnings denied. Docker-backed execution, Nitro boot, AF_VSOCK integration,
+Latest recorded local result (2026-10-09): previous 72-test suite and Clippy passed
+with warnings denied; the latest edits pass a release build, all-target compile
+check, and 6 Docker-shim tests. These shims do not execute Podman. Docker-backed
+execution, Nitro boot, AF_VSOCK integration,
 attestation, KMS release, and deployed API routing remain open; see
 [`../DEPLOYMENT-HANDOFF.md`](../DEPLOYMENT-HANDOFF.md).

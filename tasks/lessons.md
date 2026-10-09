@@ -11,3 +11,6 @@
   vsock proxy and an enclave-compatible process sandbox.
 - Never create billable cloud resources during preparation. Produce and review
   the infrastructure plan, price, shutdown policy, and teardown command first.
+- Keep the user's buyer and hunter workflow intact when adding hosting previews
+  or reworking the TEE. Use a separate preview entry point; do not replace the
+  main application routes with a teaser or disable the original CTF features.

@@ -3,6 +3,7 @@
 //! exact production code paths are what gets tested.
 
 pub mod blob_fetch;
+pub mod attestation;
 pub mod artifacts;
 pub mod manifest;
 pub mod config;

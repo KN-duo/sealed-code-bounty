@@ -1,0 +1,5 @@
+# Operator-side verification only; these packages do not enter the enclave.
+cbor2==6.1.5
+cryptography==50.0.2
+cffi==2.1.1
+pycparser==3.11

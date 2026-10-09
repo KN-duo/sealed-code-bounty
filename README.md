@@ -104,7 +104,7 @@ An earlier design (see `EXPLAIN.md`, pre-pivot history) used **Inco Lightning**.
 | Relayer | V5 verification and retry/recovery paths | 12 passing; no hosted relayer |
 | CLI | package/submission contracts and ZIP checks | 12 passing; remote environment publication incomplete |
 | Frontend | production bundle and lint succeed; local dev rig is a mock | lint/build pass; no browser E2E against a real runner |
-| Nitro/infrastructure | protocol and Terraform source exist | offline/unit validation only; no EIF, attestation, KMS release, or AWS resources |
+| Nitro/infrastructure | dev-only application EIF built locally; Terraform bootstrap plan prepared | Podman runtime import/internal network passed on the local host; no Nitro boot, attestation/KMS release proof, or AWS resources |
 
 These are local checks, not deployment proofs. Normal `anchor build` currently
 reports a mismatch between the source program ID and the preserved program

@@ -17,6 +17,7 @@ pub enum ApiError {
     StorageFull,
     StorageUnavailable,
     VerifierBusy,
+    AttestationUnavailable,
     NotImplemented(String),
     Internal(String),
 }
@@ -36,6 +37,7 @@ impl ApiError {
             ApiError::StorageFull => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::StorageUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::VerifierBusy => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::AttestationUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -52,6 +54,7 @@ impl ApiError {
             ApiError::StorageFull => "storage_full",
             ApiError::StorageUnavailable => "storage_unavailable",
             ApiError::VerifierBusy => "verifier_busy",
+            ApiError::AttestationUnavailable => "attestation_unavailable",
             ApiError::NotImplemented(_) => "not_implemented",
             ApiError::Internal(_) => "internal",
         }
@@ -72,6 +75,9 @@ impl ApiError {
             ApiError::StorageFull => "global storage cap reached; try again later".to_string(),
             ApiError::StorageUnavailable => "encrypted submission storage unavailable".to_string(),
             ApiError::VerifierBusy => "a verification is running; retry later".to_string(),
+            ApiError::AttestationUnavailable => {
+                "hardware attestation unavailable; retry later".to_string()
+            }
         }
     }
 }

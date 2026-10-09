@@ -1,34 +1,57 @@
 # BUILD — reproducible verifier build (trust-root recipe)
 
-> **Status:** this is an intended trust-root recipe, not a verified build
-> procedure. The repository does not yet contain a dedicated production EIF
-> build pipeline, and no EIF/PCR has been produced or approved. The runner's
-> current Docker runtime image is not automatically a valid Nitro image.
+> **Status:** this is a trust-root contract, not a verified production release
+> procedure. A dev-only application EIF was built locally from a dirty
+> worktree, but its PCR is not approved and it has not run in a Nitro Enclave.
+> The repository has candidate builders and unsigned provenance, not a reviewed
+> signing/release pipeline. The runner's exploit runtime image is not
+> automatically a valid Nitro image.
 > Follow [`DEPLOYMENT-HANDOFF.md`](DEPLOYMENT-HANDOFF.md) for current gates;
 > never pin a placeholder measurement as if it were a release.
 
-The on-chain trust story pins `(PCR0, ed25519 pubkey)`. Anyone must be able to
-reproduce the enclave image from public source. This file is the contract.
+Solana Config pins the verdict operator keys and upload encryption key. It does
+not store or validate a Nitro PCR. Operators must independently verify fresh
+AWS attestation against the reviewed PCR0/build before registering those keys.
+KMS separately gates secret release on the approved PCR0. Public-source
+reproducibility remains a release requirement.
 
-## 1. Runner container (local verification + EIF source)
+## 1. Exploit runtime (a separate sandbox dependency)
 ```bash
-cd runner
-docker build -f runtime.Dockerfile -t scb/runner-runtime:<git-sha> .
+runner/build-runtime.sh
 ```
-`runtime.Dockerfile` = ubuntu:24.04 base + python3 + pwntools + util-linux(setarch).
-Base digest and every apt package version resolve from the pinned ubuntu:24.04 index
-at build time — record `docker image inspect` output with the release tag when cutting
-a release.
+`runner/runtime.Dockerfile` uses a digest-pinned Ubuntu base, a fixed signed
+Ubuntu snapshot, a complete OS package lock and hashed Python wheel locks.
+The builder writes a Docker archive and its input/image/hash provenance.
+Both the 116-package runtime layer and the 143-package enclave OS layer built
+successfully on 2026-10-09. These are dependency assertions during builds,
+not Nitro execution proofs. See [dependency locks](nitro/DEPENDENCY_LOCKS.md).
 
-## 2. Nitro Enclave EIF (phase 7)
-On a `.metal` AL2023 instance:
+## 2. Development Nitro Enclave EIF
+
+The dedicated application image is `nitro/Enclave.Dockerfile`. It contains the
+release Rust runner, KMS helper, proxy, Podman and an embedded runtime archive.
+Build locally with Docker and Nitro CLI; an EC2 instance is not needed to build:
 ```bash
-nitro-cli build-enclave --docker-uri scb/runner-runtime:<git-sha> \
-  --output-file runner.eif
-nitro-cli describe-eif   # record PCR0
+SCB_KMS_TOOL_DIR=/path/to/kmstool-artifacts \
+SCB_RUNTIME_TAR=/path/to/scb-exploit-runtime.tar \
+nitro/build-eif.sh --dev-only
 ```
-Publish `<git-sha> -> PCR0` in the release notes; this pair is what gets pinned
-on-chain via `set_operators` (multisig, timelock discipline per §11).
+The builder uses the pinned runner compiler and checks helper/runtime/runner
+sidecars against the actual binaries and current source recipes before copying
+them. It embeds `SCB_BUILD_COMMIT` and records source/input digests, image ID,
+compiler metadata, OS package inventory, EIF SHA-384 and PCRs in
+`OUTPUT.provenance.json`. It refuses source changes during a build. `--release`
+requires clean source and clean component provenance; its output still has
+`release_approved:false` and needs independent review. Do not authorize a
+development PCR in KMS.
+
+Dependency locking alone does not prove bit-for-bit reproducibility. Docker
+installation timestamps and the Nitro root filesystem conversion boundary must
+be understood and reviewed, and the two-build measurement gate remains open.
+
+See [nitro/ATTESTATION.md](nitro/ATTESTATION.md) for key verification and
+controlled first-boot provisioning. Actual Nitro execution and KMS approved-PCR
+release/wrong-PCR/plain-parent denial remain mandatory before launch.
 
 ## 3. Key derivation contract (D14)
 At enclave boot: fetch M from KMS (attestation-gated), then derive:

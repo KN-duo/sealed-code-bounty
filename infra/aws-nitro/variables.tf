@@ -27,6 +27,28 @@ variable "enclave_pcr0_sha384" {
   }
 }
 
+variable "enclave_eif_s3_key" {
+  description = "Private S3 object key containing the verifier EIF downloaded by the parent at boot."
+  type        = string
+  default     = "scb/runtime/verifier.eif"
+
+  validation {
+    condition     = can(regex("^scb/runtime/[A-Za-z0-9._/-]+$", var.enclave_eif_s3_key)) && !strcontains(var.enclave_eif_s3_key, "..")
+    error_message = "enclave_eif_s3_key must be a safe key under scb/runtime/."
+  }
+}
+
+variable "enclave_eif_sha384" {
+  description = "Reviewed SHA-384 file digest for the exact verifier EIF object downloaded by the parent."
+  type        = string
+  default     = "000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+
+  validation {
+    condition     = can(regex("^[0-9a-f]{96}$", var.enclave_eif_sha384))
+    error_message = "enclave_eif_sha384 must be exactly 96 lowercase hexadecimal characters."
+  }
+}
+
 variable "budget_alert_email" {
   description = "Email address for the $1 monthly actual-cost alert."
   type        = string
@@ -43,8 +65,8 @@ variable "max_runtime_hours" {
   default     = 1
 
   validation {
-    condition     = var.max_runtime_hours >= 1 && var.max_runtime_hours <= 4
-    error_message = "max_runtime_hours must be between 1 and 4 hours."
+    condition     = var.max_runtime_hours >= 1 && var.max_runtime_hours <= 4 && floor(var.max_runtime_hours) == var.max_runtime_hours
+    error_message = "max_runtime_hours must be a whole number between 1 and 4 hours."
   }
 }
 

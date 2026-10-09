@@ -1,0 +1,9 @@
+# Fixed signed archive snapshot; do not replace with live archive/security URLs.
+Types: deb
+URIs: https://snapshot.ubuntu.com/ubuntu/20261008T000000Z/
+Suites: noble noble-updates noble-security
+Components: main universe
+Architectures: amd64
+Signed-By: /usr/share/keyrings/ubuntu-archive-keyring.gpg
+# The historical Release expiry is expected. Signature authentication stays on.
+Check-Valid-Until: no

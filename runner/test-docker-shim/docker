@@ -4,7 +4,7 @@
 # Records every invocation into $SCB_SHIM_STATE/cmd.log (one line each, in
 # order) so tests can prove argument arrays AND cleanup ordering without a
 # daemon. Honors exactly the subcommands DockerCli uses:
-#   network create --internal NAME
+#   network create --internal NAME / network rm NAME
 #   load -i FILE                       -> echoes "Loaded image: scb/target:test"
 #   run [flags] IMAGE [CMD...]         -> -d variant records detached start;
 #                                         exploit variant optionally sleeps
@@ -23,9 +23,11 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   --version) echo "Docker version 27.0-shim, build runnerharness"; exit 0 ;;
   network)
-    # post-shift: $1=create $2=--internal $3=NAME
-    log "network-create $3"
-    echo "$4"
+    case "${1:-}" in
+      create) log "network-create ${3:-}" ;;
+      rm) log "network-remove ${2:-}" ;;
+      *) echo "shim: unsupported network command: $*" >&2; exit 64 ;;
+    esac
     exit 0 ;;
   load)
     # load -i FILE

@@ -133,10 +133,11 @@ pub struct ExploitWorkspace {
 
 impl ExploitWorkspace {
     pub fn new(parent: &Path, zeroize_cap: u64) -> Result<Self, UnpackError> {
+        let inner = tempfile::Builder::new()
+            .prefix("scb-exploit-")
+            .tempdir_in(parent)?;
         Ok(Self {
-            inner: tempfile::Builder::new()
-                .prefix("scb-exploit-")
-                .tempdir_in(parent)?,
+            inner,
             plaintext_files: Vec::new(),
             zeroize_cap,
         })

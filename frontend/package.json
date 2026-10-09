@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:preview": "tsc -b && vite build --config vite.preview.config.ts --mode public-preview",
     "build:deploy": "node scripts/deploy-preflight.mjs && npm run build",
     "test:deploy": "node --test scripts/deploy-preflight.test.mjs",
     "lint": "oxlint",

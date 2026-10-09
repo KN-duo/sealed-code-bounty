@@ -10,6 +10,27 @@ use scb_runner::{config::Config, routes, state::AppState};
 use std::sync::Arc;
 use tracing_subscriber::EnvFilter;
 
+#[cfg(not(feature = "dev-secrets"))]
+fn load_attested_master() -> Result<zeroize::Zeroizing<[u8; 32]>, Box<dyn std::error::Error>> {
+    use std::process::{Command, Stdio};
+    use zeroize::Zeroizing;
+
+    let output = Command::new("/usr/bin/python3")
+        .arg("/app/nitro/kms_bootstrap_client.py")
+        .stdin(Stdio::null())
+        .stderr(Stdio::null())
+        .output()?;
+    if !output.status.success() {
+        return Err("attested KMS bootstrap failed".into());
+    }
+    let secret = Zeroizing::new(output.stdout);
+    let master: [u8; 32] = secret
+        .as_slice()
+        .try_into()
+        .map_err(|_| "attested KMS bootstrap returned an invalid key length")?;
+    Ok(Zeroizing::new(master))
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_subscriber::fmt()
         .json()
@@ -18,7 +39,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .init();
 
+    #[cfg(feature = "dev-secrets")]
     let cfg = Config::from_env()?;
+    #[cfg(not(feature = "dev-secrets"))]
+    let cfg = {
+        let master = load_attested_master()?;
+        Config::from_attested_master(master)?
+    };
     let state = Arc::new(AppState::new(cfg.clone()));
     let app = routes::router(state.clone());
 
