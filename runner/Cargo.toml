@@ -24,9 +24,9 @@ crypto_box = { version = "0.9", features = ["seal"] }
 async-trait = "0.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-
-[dev-dependencies]
+zeroize = "=1.9.0"
 tempfile = "3"
+libc = "0.2"
 
 [profile.release]
 overflow-checks = true

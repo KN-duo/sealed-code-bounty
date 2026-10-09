@@ -1,0 +1,7 @@
+aws_region          = "eu-north-1"
+project             = "sealed-code-bounty"
+environment         = "staging"
+enclave_pcr0_sha384 = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+budget_alert_email  = "replace-me@example.invalid"
+max_runtime_hours   = 1
+root_volume_gib     = 40

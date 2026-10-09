@@ -290,8 +290,9 @@ switch (cmd) {
     for (let i = 0; i < opsLen; i++) {
       ops.push(new web3.PublicKey(d.subarray(44 + i * 32, 76 + i * 32)));
     }
-    const threshold = d[76 + opsLen * 32];
-    const encPk = Buffer.from(d.subarray(77 + opsLen * 32, 109 + opsLen * 32));
+    const afterOps = 44 + opsLen * 32;
+    const threshold = d[afterOps];
+    const encPk = Buffer.from(d.subarray(afterOps + 1, afterOps + 33));
     const sig = await prog.methods
       .setOperators(ops, threshold, [...encPk], new anchor.BN(Number(delay)))
       .accountsStrict({ authority: auth.publicKey, config: configPdaPubkey() })
@@ -358,4 +359,3 @@ switch (cmd) {
     console.error(`unknown cmd: ${cmd}`);
     process.exit(2);
 }
-

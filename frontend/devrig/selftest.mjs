@@ -12,6 +12,7 @@ import { loadOrCreateKeys, openSealed, sealTo, signDetached, sodium } from "./ke
 import { buildVerdictMessage } from "./chain.mjs";
 import { VERDICT_MSG_LEN } from "./config.mjs";
 import { VERDICT_RULE, mockFlagCommitment, serve } from "./enclave.mjs";
+import { parseUploadResponse, submissionReference } from "../src/lib/submission.ts";
 
 let failures = 0;
 function check(name, ok, detail = "") {
@@ -97,9 +98,8 @@ try {
     })
   ).json();
   check(
-    "upload returns a blob_url inside the 200-char on-chain cap",
-    typeof up.blob_url === "string" && up.blob_url.length > 0 && up.blob_url.length <= 200,
-    up.blob_url,
+    "mock upload matches the client receipt contract and the on-chain cap",
+    parseUploadResponse(up).receipt === up.receipt && submissionReference(up.receipt).length === 82,
   );
   check("upload rejects an empty body", (await post("/internal/upload", {})).status === 400);
   check("unknown routes 404", (await post("/internal/nope", {})).status === 404);

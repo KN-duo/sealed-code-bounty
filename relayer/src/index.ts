@@ -6,9 +6,8 @@ import * as path from "path";
 
 import { loadConfig } from "./config";
 import { makeLogger } from "./logger";
-import { JobQueue, Job } from "./queue";
-import { processJob, PipelineDeps } from "./pipeline";
-import { decideRetry, shouldForceUnlock } from "./retry";
+import { processJob, PipelineDeps, BountyView } from "./pipeline";
+import { RecoveryWorker, type BountyRecord } from "./recovery";
 import { chainClock } from "./clock";
 import type { SealedCodeBounty } from "../../target/types/sealed_code_bounty";
 
@@ -51,13 +50,7 @@ async function main(): Promise<void> {
     provider
   );
 
-  const queue = new JobQueue();
-  const attempts = new Map<string, number>();
-  /** Tracked AwaitingResolution jobs for the force-unlock sweeper. */
-  const pendingUnlocks = new Map<
-    string,
-    { bountyPda: PublicKey; solver: PublicKey; submittedAtSecs: number; bountyId: BN }
-  >();
+  const abort = new AbortController();
   const configPda = PublicKey.findProgramAddressSync(
     [Buffer.from("config")],
     program.programId
@@ -70,7 +63,32 @@ async function main(): Promise<void> {
     operatorPubkey: operatorPk,
     enclaveUrl: cfg.enclaveUrl,
     log,
+    signal: abort.signal,
   };
+
+  const worker = new RecoveryWorker({
+    // Bounty is discriminator(8), buyer(32), bounty_id(8), then status(u8).
+    // AwaitingResolution is enum ordinal 1, base58-encoded as "2". Anchor
+    // adds its account discriminator filter to this query.
+    listPending: async () => await program.account.bounty.all([
+      { memcmp: { offset: 48, bytes: "2" } },
+    ]) as unknown as BountyRecord[],
+    fetchBounty: async (pda) => await program.account.bounty.fetchNullable(pda) as unknown as BountyView | null,
+    process: (job) => processJob(deps, job),
+    unlockState: async () => {
+      const config = await program.account.config.fetch(configPda) as unknown as { forceUnlockDelayS: BN };
+      return { nowSecs: await chainClock(connection), forceUnlockDelayS: config.forceUnlockDelayS.toNumber() };
+    },
+    unlock: async (job) => {
+      abort.signal.throwIfAborted();
+      // Anchor's rpc() confirms at the provider commitment and rejects
+      // transactions whose on-chain result contains an error.
+      await program.methods.forceUnlockSubmission(job.bountyId)
+        .accountsStrict({ caller: cfg.feePayer.publicKey, bounty: job.bountyPda, config: configPda, solver: job.solver })
+        .signers([cfg.feePayer]).rpc();
+    },
+    log,
+  }, cfg.reconcileIntervalMs, Math.max(cfg.pollIntervalMs, 15_000), cfg.pollIntervalMs);
 
   // ---- event ingestion ---------------------------------------------------
   // Retry event subscription on ECONNREFUSED (websocket port may not be
@@ -87,18 +105,11 @@ async function main(): Promise<void> {
           solver: PublicKey;
           exploitSha256: number[];
         }, slot: number, sig: string) => {
-          const job: Job = {
-            bountyPda: new PublicKey(event.bounty),
-            solver: new PublicKey(event.solver),
-            bountyId: event.bountyId,
-            exploitSha256: Buffer.from(event.exploitSha256),
-          };
-          const added = queue.enqueue(job);
-          log.info(added ? "job enqueued" : "duplicate event ignored (dedupe)", {
-            bounty: job.bountyPda.toBase58(),
+          worker.requestReconcile();
+          log.info("submission event observed; chain reconciliation requested", {
+            bounty: event.bounty.toBase58(),
             slot,
             signature: sig.slice(0, 16) + "\u2026",
-            queueDepth: queue.size,
           });
         }
       );
@@ -110,128 +121,27 @@ async function main(): Promise<void> {
     }
   }
 
-  // ---- worker loop (single-flight; POLL_INTERVAL_MS per tick) -------------
-  let running = true;
-  let busy = false;
-  const tick = async (): Promise<void> => {
-    if (!running || busy) return;
-    busy = true;
-    try {
-      for (;;) {
-        const job = queue.dequeue();
-        if (!job) break;
-        const key = job.bountyPda.toBase58();
-        const attemptNo = attempts.get(key) ?? 0;
-        const outcome = await processJob(deps, job);
-
-        if (outcome.status === "left-for-unlock") {
-          const decision = decideRetry("left-for-unlock", attemptNo);
-          if (decision.action === "requeue" && decision.delayMs >= 0) {
-            attempts.set(key, attemptNo + 1);
-            log.info("requeueing transient failure", {
-              bounty: key,
-              attempt: attemptNo + 1,
-              delayMs: decision.delayMs,
-            });
-            setTimeout(() => queue.enqueue(job), decision.delayMs).unref?.();
-          } else {
-            // Parked: the force-unlock sweeper owns this bounty now.
-            log.warn("job parked for force_unlock_submission", { bounty: key });
-          }
-        } else {
-          attempts.delete(key);
-        }
-
-        // Track pending submissions so the sweeper can free them.
-        try {
-          const b = (await deps.program.account.bounty.fetch(
-            job.bountyPda
-          )) as unknown as {
-            status: Record<string, unknown>;
-            currentSubmission: { submittedAt: BN } | null;
-          };
-          if (
-            "awaitingResolution" in b.status &&
-            b.currentSubmission &&
-            !pendingUnlocks.has(key)
-          ) {
-            pendingUnlocks.set(key, {
-              bountyPda: job.bountyPda,
-              solver: job.solver,
-              submittedAtSecs: b.currentSubmission.submittedAt.toNumber(),
-              bountyId: job.bountyId,
-            });
-          } else if (!("awaitingResolution" in b.status)) {
-            pendingUnlocks.delete(key);
-          }
-        } catch {
-          /* best-effort tracking */
-        }
-      }
-    } finally {
-      busy = false;
-    }
-  };
-
-  // ---- force-unlock sweeper (audit P1-4b) --------------------------------
-  const sweepInterval = setInterval(() => {
-    void (async () => {
-      if (!running) return;
-      let nowSecs: number | null = null;
-      for (const [key, p] of [...pendingUnlocks.entries()]) {
-        try {
-          const b = (await deps.program.account.bounty.fetch(p.bountyPda)) as unknown as {
-            status: Record<string, unknown>;
-            currentSubmission: { submittedAt: BN } | null;
-          };
-          if (!("awaitingResolution" in b.status)) {
-            pendingUnlocks.delete(key);
-            continue;
-          }
-          if (nowSecs === null) nowSecs = await chainClock(connection);
-          const subAt =
-            b.currentSubmission?.submittedAt.toNumber() ?? p.submittedAtSecs;
-          const cfgAcc = (await deps.program.account.config.fetch(
-            configPda
-          )) as unknown as { forceUnlockDelayS: BN };
-          if (!shouldForceUnlock(nowSecs, subAt, cfgAcc.forceUnlockDelayS.toNumber()))
-            continue;
-
-          await deps.program.methods
-            .forceUnlockSubmission(p.bountyId)
-            .accountsStrict({
-              caller: cfg.feePayer.publicKey,
-              bounty: p.bountyPda,
-              config: configPda,
-              solver: p.solver,
-            })
-            .signers([cfg.feePayer])
-            .rpc();
-          pendingUnlocks.delete(key);
-          log.info("force_unlock_submission sent", { bounty: key });
-        } catch (e) {
-          log.warn("force-unlock sweep attempt failed", {
-            bounty: key,
-            error: String(e).slice(0, 200),
-          });
-        }
-      }
-    })().catch(() => {});
-  }, Math.max(cfg.pollIntervalMs, 15_000));
-  const timer = setInterval(() => void tick(), cfg.pollIntervalMs);
+  // One timer and one serialized worker; no delayed requeue callbacks can
+  // resurrect work after shutdown or run concurrently with the unlock sweep.
+  const timer = setInterval(() => void worker.tick(), cfg.pollIntervalMs);
 
   // ---- graceful shutdown --------------------------------------------------
-  const shutdown = (signal: string): void => {
-    log.info("shutdown requested", { signal, pendingJobs: queue.size });
-    running = false;
+  let shutdownRequested = false;
+  const shutdown = async (signal: string): Promise<void> => {
+    if (shutdownRequested) return;
+    shutdownRequested = true;
+    log.info("shutdown requested", { signal, pendingJobs: worker.queue.size });
     clearInterval(timer);
-    if (typeof listenerId === 'number') void program.removeEventListener(listenerId).catch(() => {});
-    const leftover = queue.size;
-    log.info("bye", { droppedJobs: leftover });
+    abort.abort(new Error("relayer shutting down"));
+    const stopped = worker.stop();
+    if (typeof listenerId === "number") await program.removeEventListener(listenerId).catch(() => {});
+    await stopped;
+    log.info("bye; pending submissions will recover from chain", { pendingJobs: worker.queue.size });
     process.exit(0);
   };
-  process.on("SIGINT", () => shutdown("SIGINT"));
-  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT", () => void shutdown("SIGINT"));
+  process.on("SIGTERM", () => void shutdown("SIGTERM"));
+  await worker.tick();
 }
 
 main().catch((e) => {

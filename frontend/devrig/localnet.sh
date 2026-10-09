@@ -12,7 +12,6 @@
 
 set -euo pipefail
 
-EXPECTED_PROGRAM_ID="FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
 RPC_URL="http://127.0.0.1:8899"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -33,6 +32,13 @@ for bin in solana solana-test-validator anchor; do
     exit 1
   }
 done
+
+# A fresh clone has no target/deploy keypair. Anchor creates one on the first
+# build, and its public key will generally differ from the checked-in example
+# address. Synchronize declare_id! and Anchor.toml before compiling so the
+# deployed binary, generated IDL, and deploy key all agree.
+echo "==> synchronizing program id with the local deploy key"
+anchor keys sync
 
 # --- validator -------------------------------------------------------------
 
@@ -76,27 +82,10 @@ echo "==> anchor deploy"
 anchor deploy
 
 DEPLOYED_ID="$(solana address -k target/deploy/sealed_code_bounty-keypair.json)"
-if [ "$DEPLOYED_ID" != "$EXPECTED_PROGRAM_ID" ]; then
-  cat >&2 <<EOF
-
-  !! Deployed program id does not match the one the frontend defaults to.
-
-       deployed: $DEPLOYED_ID
-       expected: $EXPECTED_PROGRAM_ID
-
-     Point the frontend at the deployed id before seeding — add this to
-     frontend/.env.local (the seed step will otherwise overwrite it):
-
-       VITE_PROGRAM_ID=$DEPLOYED_ID
-
-     and pass the same value through the environment when running the rig:
-
-       VITE_PROGRAM_ID=$DEPLOYED_ID node devrig/rig.mjs seed --wallet <pubkey>
-
-EOF
-else
-  echo "==> program id matches the frontend default: $DEPLOYED_ID"
-fi
+echo "==> deployed local program id: $DEPLOYED_ID"
+printf '# Written by frontend/devrig/localnet.sh. Safe to delete.\nVITE_RPC_URL=%s\nVITE_PROGRAM_ID=%s\n' \
+  "$RPC_URL" "$DEPLOYED_ID" > frontend/.env.local
+echo "==> wrote frontend/.env.local"
 
 # --- IDL sanity -------------------------------------------------------------
 # A checkout behind main builds a v1 IDL that looks perfectly valid but names

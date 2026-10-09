@@ -15,6 +15,8 @@ pub enum ApiError {
     PayloadTooLarge(String),
     RateLimited(u64),
     StorageFull,
+    StorageUnavailable,
+    VerifierBusy,
     NotImplemented(String),
     Internal(String),
 }
@@ -32,6 +34,8 @@ impl ApiError {
                 StatusCode::TOO_MANY_REQUESTS
             }
             ApiError::StorageFull => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::StorageUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            ApiError::VerifierBusy => StatusCode::SERVICE_UNAVAILABLE,
             ApiError::NotImplemented(_) => StatusCode::NOT_IMPLEMENTED,
             ApiError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -46,6 +50,8 @@ impl ApiError {
             ApiError::PayloadTooLarge(_) => "payload_too_large",
             ApiError::RateLimited(_) => "rate_limited",
             ApiError::StorageFull => "storage_full",
+            ApiError::StorageUnavailable => "storage_unavailable",
+            ApiError::VerifierBusy => "verifier_busy",
             ApiError::NotImplemented(_) => "not_implemented",
             ApiError::Internal(_) => "internal",
         }
@@ -63,20 +69,28 @@ impl ApiError {
             ApiError::RateLimited(retry) => {
                 format!("rate limited; retry after {retry}s")
             }
-            ApiError::StorageFull => {
-                "global storage cap reached; try again later".to_string()
-            }
+            ApiError::StorageFull => "global storage cap reached; try again later".to_string(),
+            ApiError::StorageUnavailable => "encrypted submission storage unavailable".to_string(),
+            ApiError::VerifierBusy => "a verification is running; retry later".to_string(),
         }
     }
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        let mut resp = (self.status(), Json(json!({ "error": self.code(), "message": self.message() }))).into_response();
+        let mut resp = (
+            self.status(),
+            Json(json!({ "error": self.code(), "message": self.message() })),
+        )
+            .into_response();
         if let ApiError::RateLimited(retry) = &self {
             if let Ok(v) = retry.to_string().parse() {
                 resp.headers_mut().insert("retry-after", v);
             }
+        }
+        if matches!(self, ApiError::VerifierBusy) {
+            resp.headers_mut()
+                .insert("retry-after", "5".parse().expect("static header"));
         }
         resp
     }

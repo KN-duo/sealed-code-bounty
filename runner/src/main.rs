@@ -20,9 +20,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = Config::from_env()?;
     let state = Arc::new(AppState::new(cfg.clone()));
-    AppState::spawn_sweeper(state.clone());
-
-    let app = routes::router(state);
+    let app = routes::router(state.clone());
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], cfg.port));
     tracing::info!(%addr, "scb-runner listening");
@@ -30,6 +28,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_all()
         .build()?
         .block_on(async move {
+            // Spawning requires an entered Tokio runtime, including at boot.
+            AppState::spawn_sweeper(state);
             let listener = tokio::net::TcpListener::bind(addr).await?;
             axum::serve(
                 listener,

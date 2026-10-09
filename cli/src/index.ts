@@ -82,8 +82,10 @@ async function main(): Promise<void> {
   const memoryMb = Number(o.memoryMb);
   const cpus = Number(o.cpus);
   const seed = Number(o.seed);
-  if (![timeoutSeconds, memoryMb, cpus, seed].every((n) => Number.isFinite(n) && n >= 0)) {
-    throw new PackError(EXIT_USAGE, "--timeout-secs/--memory-mb/--cpus/--seed must be non-negative numbers");
+  if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 60 ||
+      !Number.isInteger(memoryMb) || memoryMb < 16 || memoryMb > 512 || cpus !== 1 ||
+      !Number.isInteger(seed) || seed < 0 || seed > 4294967295) {
+    throw new PackError(EXIT_USAGE, "Use integer --timeout-secs 1..60, --memory-mb 16..512, --cpus 1 and --seed 0..4294967295");
   }
 
   const name = sanitizeName(o.name ?? path.basename(challengeDir));
@@ -138,23 +140,22 @@ async function main(): Promise<void> {
     );
   }
 
-  const entrypointString = [...img.entrypoint, ...img.cmd].join(" ");
   const manifest: Manifest = {
     format_version: 2,
     name,
     image_tarball: { url, sha256 },
     target:
       o.kind === "tcp_service"
-        ? { kind: "tcp_service", host: "127.0.0.1", port }
+        ? { kind: "tcp_service", host: "target", port }
         : { kind: "binary", exec: o.exec!, io: "stdio", argv: o.arg },
     limits: { timeout_seconds: timeoutSeconds, memory_mb: memoryMb, cpus },
     determinism: { aslr: o.aslr as "off" | "on", seed },
     flag_placeholder: FLAG_PLACEHOLDER,
-    entrypoint: entrypointString,
+    entrypoint: o.kind === "binary" ? [o.exec!, ...o.arg] : [...img.entrypoint, ...img.cmd],
   };
   await emitManifest(path.join(outDir, "manifest.json"), manifest);
 
-  const composeText = renderCompose(manifest, tag, img.architecture, img.entrypoint, img.cmd);
+  const composeText = renderCompose(manifest, tag, img.architecture);
   await writeFile(path.join(outDir, "docker-compose.yml"), composeText);
 
   console.error("[5/5] done:");

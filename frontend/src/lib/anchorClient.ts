@@ -3,7 +3,7 @@ import * as anchor from "@anchor-lang/core";
 import type { Program, Provider } from "@anchor-lang/core";
 import idl from "../idl/sealed_code_bounty.json";
 import type { SealedCodeBounty } from "../idl/sealed_code_bounty";
-import { RPC_URL } from "../env";
+import { PROGRAM_ID_STRING, RPC_URL } from "../env";
 import { bytesToHex } from "./format";
 import { configPda } from "./pda";
 import type {
@@ -26,11 +26,12 @@ export function getConnection(): Connection {
 // A wallet-less program for READ paths (Board, Leaderboard, detail). Writes use
 // useProgram() which carries a signing wallet. Reads only touch provider.connection.
 let readProgram: Program<SealedCodeBounty> | null = null;
+const runtimeIdl = { ...idl, address: PROGRAM_ID_STRING } as anchor.Idl;
 export function getReadProgram(): Program<SealedCodeBounty> {
   if (!readProgram) {
     const provider = { connection: getConnection() } as unknown as Provider;
     readProgram = new anchor.Program(
-      idl as anchor.Idl,
+      runtimeIdl,
       provider,
     ) as unknown as Program<SealedCodeBounty>;
   }

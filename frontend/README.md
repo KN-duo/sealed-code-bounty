@@ -19,7 +19,7 @@ post → hunt → PASS → restore backup key → decrypt the Reveal in the UI.
 
 | what | where | notes |
 | --- | --- | --- |
-| Node 22 | Windows | `node --version` should print v22.x |
+| Node 22.18+ or Node 24 | Windows | required for the TypeScript contract checks in the rig |
 | Solana + Anchor toolchain | **WSL only** | installed in the WSL checkout `~/sealed-code-bounty`; Windows never needs it |
 | this repo in WSL at `~/sealed-code-bounty` | WSL | the chain half runs there |
 | Phantom (browser extension) | Windows browser | will be pointed at the local validator |
@@ -124,7 +124,7 @@ The program has no buyer≠solver rule, so one wallet plays both sides.
 3. Click **Seal, sign & submit**; approve **two** Phantom prompts — a message
    signature (the intent proof) and the transaction (which posts a 0.05 SOL bond).
 4. **Correct output:** the activity log walks `sha256(exploit)` → `sealed box` →
-   intent signature → `blob url: mock://…` → `tx: …`, then flips to
+   intent signature → `enclave receipt: …` → `tx: …`, then flips to
    **“Flag captured — you won!”** within a few seconds. In the `serve` terminal
    you'll see matching `verdict … PASS` and `resolved <sig>` lines.
 
@@ -192,3 +192,16 @@ node devrig/selftest.mjs
 
 All three must be clean; `selftest` covers the verdict wire format and both
 sealed-box hops — the things that break silently when constants drift.
+
+With Node 22.18+ (or Node 24), run the upload-contract checks with:
+
+```bash
+node --test devrig/upload-contract.test.mjs
+```
+
+The upload API returns exactly `{ "receipt": "<64 lowercase hex>" }`.
+The browser validates it before registering `scb:submission:v1:<receipt>` in
+the on-chain `blob_url` field. This opaque receipt identifies the encrypted
+upload record; the plaintext exploit hash remains a separate commitment. The
+development rig uses a loopback-only, in-memory mock and loses uploads on
+restart. It does not demonstrate durable storage, real execution, or a TEE.

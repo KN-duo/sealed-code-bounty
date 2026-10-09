@@ -1,4 +1,6 @@
 import { ENCLAVE_DISPLAY_URL, ENCLAVE_URL } from "../env";
+import { parseUploadResponse } from "./submission";
+import type { UploadResponse } from "./submission";
 
 // Typed client for the runner / enclave HTTP surface. Every call fails LOUDLY
 // with a specific message so the UI can render a real error state, never a
@@ -114,8 +116,8 @@ export async function getChallenge(bountyPda: string): Promise<Challenge | null>
   }
 }
 
-// Hunter step: upload the sealed exploit + intent proof; enclave returns the
-// blob url the submit_exploit transaction records on-chain.
+// Hunter step: upload the sealed exploit + intent proof. Register the returned
+// receipt as scb:submission:v1:<receipt> in the on-chain blob_url field.
 export interface ClaimedChainView {
   env_blob_sha256: string;
   buyer_enc_pk: string;
@@ -129,19 +131,11 @@ export interface UploadRequest {
   submit_intent_sig: string; // base64
   exploit_sealed_box: string; // base64
 }
-// The enclave stores the sealed exploit and returns a receipt. The on-chain
-// blob_url is a separate synthetic reference the caller builds (the enclave
-// locates the upload by bounty + exploit hash, not by this url).
-export interface UploadResponse {
-  receipt: string;
-}
 export async function uploadExploit(req: UploadRequest): Promise<UploadResponse> {
-  const res = await post<{ receipt?: string; blob_url?: string }>("/internal/upload", req);
-  const receipt = res.receipt ?? res.blob_url;
-  if (typeof receipt !== "string" || receipt.length === 0) {
-    throw new RunnerError(
-      `The verifier accepted the upload but returned no receipt (got ${JSON.stringify(res).slice(0, 200)}).`,
-    );
+  const res = await post<unknown>("/internal/upload", req);
+  try {
+    return parseUploadResponse(res);
+  } catch {
+    throw new RunnerError("Verifier returned an invalid upload receipt.");
   }
-  return { receipt };
 }

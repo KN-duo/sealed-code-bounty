@@ -12,13 +12,17 @@ export interface ChainView {
   buyer_enc_pk: string;
   /** hex-encoded sha256(flag) commitment pinned at create_bounty. */
   flag_commitment: string;
-  /** hex-encoded SHA-256 of the pending submission's sealed exploit. */
+  /** hex-encoded SHA-256 of the pending submission's plaintext exploit. */
   exploit_sha256: string;
 }
 
 export interface VerifyRequest {
+  /** SHA-256 of the canonical manifest, read from the bounty account. */
+  manifest_sha256: string;
   /** base58 Bounty PDA the verdict must bind. */
   bounty_pda: string;
+  /** SHA-256 receipt from the canonical on-chain scb:submission:v1 reference. */
+  submission_receipt: string;
   claimed_chain_view: ChainView;
   /** base58 solver pubkey claimed for this submission. */
   solver_pubkey: string;

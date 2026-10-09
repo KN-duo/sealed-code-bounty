@@ -8,6 +8,14 @@ test-ledger
 .yarn
 tests/.keys
 
+# AWS Nitro staging state, plans, and local operator inputs
+infra/aws-nitro/.terraform/
+infra/aws-nitro/*.tfstate
+infra/aws-nitro/*.tfstate.*
+infra/aws-nitro/*.tfplan
+infra/aws-nitro/staging.plan.txt
+infra/aws-nitro/staging.tfvars
+
 # scb-pack cli
 cli/node_modules/
 cli/dist/

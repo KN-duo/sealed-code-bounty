@@ -11,7 +11,7 @@ pub use events::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V");
+declare_id!("HV2TXWm5BhLxPwW12wBzPV6kRGTxANidDbKg7r88TVNA");
 
 #[program]
 pub mod sealed_code_bounty {

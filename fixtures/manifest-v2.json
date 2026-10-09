@@ -1,0 +1,4 @@
+{
+  "canonical": "{\"determinism\":{\"aslr\":\"off\",\"seed\":0},\"entrypoint\":[\"/app/service\",\"--label\",\"a b\",\"quote\\\"slash\\\\\"],\"flag_placeholder\":\"{{FLAG}}\",\"format_version\":2,\"image_tarball\":{\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"url\":\"https://storage.example.com/scb/envs/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.tar.gz\"},\"limits\":{\"cpus\":1,\"memory_mb\":512,\"timeout_seconds\":60},\"name\":\"challenge\",\"target\":{\"host\":\"target\",\"kind\":\"tcp_service\",\"port\":1337}}",
+  "sha256": "ebeb5a263c3c37d976293b33c033ee1fb63bf93634189cc4b8d8e0170f37d4a6"
+}

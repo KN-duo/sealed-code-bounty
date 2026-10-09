@@ -10,6 +10,7 @@ the four `/internal/*` endpoints.
 ```bash
 SCB_MASTER_SECRET_HEX=$(openssl rand -hex 32) \
 SCB_ENCLAVE_ENC_SECRET_HEX=$(openssl rand -hex 32) \
+SCB_SUBMISSION_STORE=development-directory SCB_ALLOW_DEV_DIRECTORY_STORE=1 \
 PORT=8443 cargo run
 ```
 
@@ -21,7 +22,7 @@ material, they never leave the process.
 | `GET /internal/healthz` | liveness |
 | `POST /internal/seal_bounty {bounty_pda}` | → `{flag_commitment}` (deterministic across restarts) |
 | `POST /internal/upload {bounty_pda, claimed_chain_view{env_blob_sha256,buyer_enc_pk,flag_commitment,exploit_sha256}, solver_pubkey, submit_intent_sig, exploit_sealed_box}` | → `{receipt}` |
-| `POST /internal/verify {bounty_pda, claimed_chain_view}` | verdict JSON mirroring `relayer/src/enclave-types.ts` |
+| `POST /internal/verify {bounty_pda, solver_pubkey, submission_receipt, claimed_chain_view}` | verdict JSON mirroring `relayer/src/enclave-types.ts` |
 
 ## REAL vs STUB
 
@@ -31,10 +32,10 @@ material, they never leave the process.
 | Stable verdict key `HKDF(M, info="scb-verdict-key-v1")` (D14) | **REAL**, ed25519-dalek |
 | Intent-signature gate `SCB_SUBMIT_V1‖pda‖sha256(plaintext)` — 403 before any heavy work | **REAL** |
 | Sealed-box unseal/seal (libsodium-compatible, `crypto_box` crate) | **REAL** (hunter→enclave on upload; enclave→buyer reveal on PASS) |
-| Redaction engine D11 (raw/hex±case/base64/base58/double-encodings, longest-first) + fail-closed paranoia sweep | **REAL**, table-tested |
+| Public execution log | **REAL**, fixed PASS/FAIL text only; process output is never returned |
 | Safe rootfs unpack: total-size cap (2 GiB default), file-count cap (10k), traversal/symlink/hardlink rejection | **REAL**, attack-fixture tested |
 | Rate limiting: per-wallet AND per-IP token buckets (5/hr default) | **REAL** |
-| Storage abuse controls: global cap → 503 backpressure; 30-min TTL sweeper for unregistered uploads | **REAL** (in-memory store; phase-2 makes it durable) |
+| Immutable encrypted submission store with SHA-256 receipt, aggregate cap, and restart recovery | **REAL** locally via development directory; production uses the vsock helper and parent S3 broker |
 | Chain-view divergence check → HTTP 409, never guesses | **REAL** |
 | Verdict signing over exact 175-byte `SCB_VERDICT_V3` wire | **REAL**, golden-tested |
 | Sandbox execution (`SandboxExecutor`) | **STUB by default**: `StubSandbox` answers typed `Unsupported` → HTTP 501. `DockerCli` impl composes `docker run` arg-arrays (network/memory/cpus/SEED env, work-dir mount) but is not yet wired to blob pulling or a live target container. |
@@ -45,8 +46,7 @@ material, they never leave the process.
   error — no other channel exists in this process.
 - **No logging of secrets**: `FlagString` has no `Display`; its `Debug`
   prints `[REDACTED]`. Master secret excluded from `Config` Debug output.
-  The redactor's final sweep fails closed (FAIL + empty log) if any encoding
-  survives.
+  Process output is not included in HTTP responses.
 - **Intent gate ordering**: rate-limit (cheapest) → size caps → unseal
   (cheap X25519) → intent signature (403) → storage reserve → persist.
   Expensive unpack/execution never runs for impostors.
@@ -55,12 +55,13 @@ material, they never leave the process.
   phase-9 upgrade.
 - **Hash checks happen here**, inside the boundary, never trusted from the
   parent side.
-- Upload store is in-memory: a restart drops pending uploads, which degrades
-  to hunters resubmitting — never to a leak.
+- The development store persists only sealed submissions and authenticated
+  metadata. Production storage runs through a fixed-key vsock broker; account
+  credentials remain on the EC2 parent.
 
 ## Tests
 
 ```bash
-cargo test        # 28 tests: lib units + HTTP integration via tower::oneshot
+cargo test        # unit, HTTP integration, blob and Docker-shim suites
 cargo clippy --all-targets   # zero warnings expected
 ```

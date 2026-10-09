@@ -29,12 +29,14 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 export PROGRAM_ID="FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
 export RPC_URL="http://127.0.0.1:8899"
-ENCLAVE_PORT=8443
+ENCLAVE_PORT="${ENCLAVE_PORT:-8443}"
 PRIZE_LAMPORTS=500000000   # 0.5 SOL
 BOND_LAMPORTS=10000000     # 0.01 SOL
 MANIFEST_HEX=$(printf '02%.0s' $(seq 32))
 ENV_HASH_HEX=$(printf '03%.0s' $(seq 32))
 BUYER_ENC_SECRET_HEX=$(printf 'ab%.0s' $(seq 32))
+EXPECT_OUTCOME="${SCB_EXPECT_OUTCOME:-PASS}"
+case "$EXPECT_OUTCOME" in PASS|FAIL) ;; *) die "SCB_EXPECT_OUTCOME must be PASS or FAIL" ;; esac
 
 WORK="$(mktemp -d /tmp/scb-real.XXXXXX)"
 VAL_LOG="$WORK/validator.log"; REL_LOG="$WORK/relayer.log"; ENC_LOG="$WORK/enclave.log"
@@ -54,7 +56,9 @@ command -v docker >/dev/null || die "docker not found — this needs a Docker ho
 docker image inspect scb-target >/dev/null 2>&1 || die "image scb-target missing — run: bash enclave-exec/build.sh"
 docker image inspect scb-runtime >/dev/null 2>&1 || die "image scb-runtime missing — run: bash enclave-exec/build.sh"
 [ -f cli/dist/scb-submit.js ] || die "cli not built — run: npm --prefix cli run build"
-[ -d enclave-exec/node_modules/@ardrive ] || die "Arweave deps missing — run: npm --prefix enclave-exec install"
+if [ "${SCB_REVEAL_STORE:-arweave}" != "inline" ]; then
+  [ -d enclave-exec/node_modules/@ardrive ] || die "Arweave deps missing — run: npm --prefix enclave-exec install"
+fi
 
 # --- boot validator with the program ---------------------------------------
 say "boot validator + program"
@@ -134,9 +138,28 @@ say "submit exploit ($EXPLOIT_FILE, sealed & unreadable in transit)"
 SOLVER_BEFORE=$(node e2e/chain.mjs balance "$SOLVER_PUB" | python3 -c "import json,sys; print(json.load(sys.stdin)['lamports'])")
 SUBMIT_OUT=$(node cli/dist/scb-submit.js --rpc-url "$RPC_URL" --keypair "$WORK/solver.json" \
   --bounty "$BUYER_PUB:$CUR_ID" --file "$EXPLOIT_FILE" \
+  --program-id "$PROGRAM_ID" \
   --enclave-url "http://127.0.0.1:$ENCLAVE_PORT" --wait)
 echo "$SUBMIT_OUT" | head -3
-echo "$SUBMIT_OUT" | grep -q '"status": *"PASS"' || die "expected PASS from real execution; got: $SUBMIT_OUT (enclave log: $ENC_LOG)"
+echo "$SUBMIT_OUT" | grep -q "\"status\": *\"$EXPECT_OUTCOME\"" || die "expected $EXPECT_OUTCOME from real execution; got: $SUBMIT_OUT (enclave log: $ENC_LOG)"
+
+if [ "$EXPECT_OUTCOME" = "FAIL" ]; then
+  say "assert FAIL cleanup + resubmission"
+  STATUS=$(node e2e/chain.mjs fetch-bounty "$BUYER_PUB" "$CUR_ID" | python3 -c "import json,sys; print(json.load(sys.stdin)['statusByte'])")
+  [ "$STATUS" = "0" ] || die "FAIL did not reopen bounty (status=$STATUS)"
+  RCPT=$(node e2e/chain.mjs receipt-exists "$BUYER_PUB" "$CUR_ID" "$SOLVER_PUB" | python3 -c "import json,sys; print(json.load(sys.stdin)['exists'])")
+  [ "$RCPT" = "False" ] || die "FAIL unexpectedly minted a Receipt"
+  CT_B64=$(node e2e/chain.mjs reveal-ct "$BUYER_PUB" "$CUR_ID" | python3 -c "import json,sys; print(json.load(sys.stdin).get('ciphertextB64') or '')")
+  [ -z "$CT_B64" ] || die "FAIL unexpectedly created a Reveal"
+  echo "ok: FAIL reopened slot, minted no Receipt, and revealed nothing"
+
+  RESUB_OUT=$(node cli/dist/scb-submit.js --rpc-url "$RPC_URL" --keypair "$WORK/solver.json" \
+    --bounty "$BUYER_PUB:$CUR_ID" --file "$EXPLOIT_FILE" --program-id "$PROGRAM_ID" \
+    --enclave-url "http://127.0.0.1:$ENCLAVE_PORT" --wait)
+  echo "$RESUB_OUT" | grep -q '"status": *"FAIL"' || die "resubmission did not receive real FAIL: $RESUB_OUT"
+  printf '\n\033[1;32mFULL REAL NEGATIVE CYCLE PASSED — FAIL cleanup and resubmission verified.\033[0m\n\n'
+  exit 0
+fi
 
 # --- assert the money moved + the exploit was delivered ---------------------
 say "assert payout + receipt + delivery"

@@ -22,7 +22,8 @@ export const INSTRUCTIONS_SYSVAR_ID = new PublicKey(
   "Sysvar1nstructions1111111111111111111111111"
 );
 
-const ENCLAVE_TIMEOUT_MS = 10_000;
+// Two bounded artifact fetches (120s each), execution (60s), transport margin.
+const ENCLAVE_TIMEOUT_MS = 310_000;
 const ENCLAVE_ATTEMPTS = 5;
 const BACKOFF_BASE_MS = 500;
 
@@ -38,6 +39,8 @@ export interface PipelineDeps {
   log: Logger;
   /** injectable fetch for tests */
   fetchImpl?: typeof fetch;
+  /** Shutdown cancels verifier calls and prevents new settlement transactions. */
+  signal?: AbortSignal;
 }
 
 export interface BountyView {
@@ -46,6 +49,7 @@ export interface BountyView {
   prizeLamports: BN;
   deadline: BN;
   envBlobSha256: Uint8Array;
+  manifestSha256: Uint8Array;
   flagCommitment: Uint8Array;
   buyerEncPk: Uint8Array;
   currentSubmission: {
@@ -74,7 +78,17 @@ export async function validateJob(deps: PipelineDeps, job: Job): Promise<BountyV
       `submission solver ${sub.solver.toBase58()} != event solver ${job.solver.toBase58()}`
     );
   }
+  if (!Buffer.from(sub.exploitSha256).equals(job.exploitSha256)
+    || !sub.submittedAt.eq(job.submittedAt) || sub.blobUrl !== job.submissionRef) {
+    throw new PermanentError("submission was replaced since this job was queued");
+  }
   return b;
+}
+
+export function submissionReceipt(reference: string): string {
+  const match = /^scb:submission:v1:([0-9a-f]{64})$/.exec(reference);
+  if (!match) throw new PermanentError("submission reference must be scb:submission:v1:<64 lowercase hex>");
+  return match[1];
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +107,8 @@ export async function callEnclave(
   const sub = bounty.currentSubmission!;
   const body: VerifyRequest = {
     bounty_pda: job.bountyPda.toBase58(),
+    manifest_sha256: Buffer.from(bounty.manifestSha256).toString("hex"),
+    submission_receipt: submissionReceipt(sub.blobUrl),
     claimed_chain_view: {
       env_blob_sha256: Buffer.from(bounty.envBlobSha256).toString("hex"),
       buyer_enc_pk: Buffer.from(bounty.buyerEncPk).toString("hex"),
@@ -104,12 +120,15 @@ export async function callEnclave(
 
   let lastErr = "";
   for (let attempt = 0; attempt < ENCLAVE_ATTEMPTS; attempt++) {
+    deps.signal?.throwIfAborted();
     try {
       const res = await (deps.fetchImpl ?? fetch)(`${deps.enclaveUrl}/internal/verify`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(ENCLAVE_TIMEOUT_MS),
+        signal: deps.signal
+          ? AbortSignal.any([deps.signal, AbortSignal.timeout(ENCLAVE_TIMEOUT_MS)])
+          : AbortSignal.timeout(ENCLAVE_TIMEOUT_MS),
       });
       if (res.ok) {
         const parsed = (await res.json()) as VerifyResponse;
@@ -123,10 +142,12 @@ export async function callEnclave(
         throw new PermanentError(`enclave rejected verification: HTTP ${res.status}`);
       }
     } catch (e) {
+      deps.signal?.throwIfAborted();
       if (e instanceof PermanentError) throw e;
       const cause = (e as { cause?: { code?: string; message?: string } })?.cause;
       lastErr = `${cause ? `${cause.code ?? ""} ${cause.message ?? ""}` : ""} :: ${String(e)}`;
     }
+    if (attempt + 1 === ENCLAVE_ATTEMPTS) break;
     const delay = Math.min(BACKOFF_BASE_MS * 2 ** attempt, 8000);
     deps.log.warn("enclave call failed; backing off", {
       attempt: attempt + 1,
@@ -134,7 +155,18 @@ export async function callEnclave(
       error: lastErr,
       bounty: job.bountyPda.toBase58(),
     });
-    await new Promise((r) => setTimeout(r, delay));
+    await new Promise<void>((resolve, reject) => {
+      const onAbort = () => {
+        clearTimeout(timer);
+        reject(deps.signal?.reason ?? new Error("shutdown requested"));
+      };
+      const timer = setTimeout(() => {
+        deps.signal?.removeEventListener("abort", onAbort);
+        resolve();
+      }, delay);
+      deps.signal?.addEventListener("abort", onAbort, { once: true });
+      if (deps.signal?.aborted) onAbort();
+    });
   }
   // Give up: slot stays AwaitingResolution until force_unlock_submission.
   // NEVER fabricate a local FAIL — only enclave-signed verdicts exist.
@@ -272,11 +304,12 @@ export async function processJob(deps: PipelineDeps, job: Job): Promise<JobOutco
 
   let bounty: BountyView;
   try {
+    deps.signal?.throwIfAborted();
     bounty = await validateJob(deps, job);
   } catch (e) {
     const reason = String(e);
     deps.log.error("job rejected by chain-state validation", { ...tag, reason });
-    return { status: "permanent-reject", reason };
+    return { status: e instanceof PermanentError ? "permanent-reject" : "left-for-unlock", reason };
   }
   deps.log.info("chain state validated (AwaitingResolution, solver match)", tag);
 
@@ -291,7 +324,7 @@ export async function processJob(deps: PipelineDeps, job: Job): Promise<JobOutco
       ...tag,
       reason,
     });
-    return { status: "left-for-unlock", reason };
+    return { status: e instanceof PermanentError ? "permanent-reject" : "left-for-unlock", reason };
   }
   deps.log.info("verdict received", { ...tag, outcome: resp.outcome });
 
@@ -307,17 +340,22 @@ export async function processJob(deps: PipelineDeps, job: Job): Promise<JobOutco
   }
 
   try {
+    // The slot can change while execution runs (e.g. force-unlock/resubmit).
+    deps.signal?.throwIfAborted();
+    await validateJob(deps, job);
     const { blockhash, lastValidBlockHeight } =
       await deps.connection.getLatestBlockhash("confirmed");
     tx.recentBlockhash = blockhash;
     tx.feePayer = deps.feePayer.publicKey;
+    deps.signal?.throwIfAborted();
     const signature = await deps.connection.sendTransaction(tx, [deps.feePayer], {
       skipPreflight: false,
     });
-    await deps.connection.confirmTransaction(
+    const confirmation = await deps.connection.confirmTransaction(
       { signature, blockhash, lastValidBlockHeight },
       "confirmed"
     );
+    if (confirmation.value.err) throw new Error(`verdict transaction rejected: ${JSON.stringify(confirmation.value.err)}`);
     deps.log.info("verdict transaction landed", {
       ...tag,
       outcome: prepared.outcome,

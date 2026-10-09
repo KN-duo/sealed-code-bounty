@@ -126,6 +126,8 @@ const commitments = new Map();  // pda -> commitment hex (public)
 const uploads = new Map();      // pda -> { exploit: Buffer, chain_view, solver_pubkey }
 const targets = new Map();      // pda -> { image, port, copyBinary } for per-bounty targets
 const challenges = new Map();   // pda -> { title, description, port } shown to hunters
+const MAX_REQUEST_BYTES = Number(process.env.SCB_MAX_REQUEST_BYTES ?? 70 * 1024 * 1024);
+const ALLOW_TARGET_BUILDS = process.env.SCB_ALLOW_UNTRUSTED_TARGET_BUILDS === "1";
 
 // judge() is ESM; load it once.
 let judgeFn = null;
@@ -145,8 +147,21 @@ const server = http.createServer((req, res) => {
   };
   const readBody = (cb) => {
     let b = "";
-    req.on("data", (c) => (b += c));
+    let bytes = 0;
+    let rejected = false;
+    req.on("data", (c) => {
+      if (rejected) return;
+      bytes += c.length;
+      if (bytes > MAX_REQUEST_BYTES) {
+        rejected = true;
+        respond(413, { error: "request body too large" });
+        req.destroy();
+        return;
+      }
+      b += c;
+    });
     req.on("end", () => {
+      if (rejected) return;
       try {
         cb(JSON.parse(b || "{}"));
       } catch (e) {
@@ -184,7 +199,15 @@ const server = http.createServer((req, res) => {
         // Per-bounty target: build the company's uploaded source into an image
         // now, so judging runs against THEIR program (not the baked ret2win). A
         // bounty with no target falls back to the demo target.
-        if (target && (target.source_zip_b64 || target.source_url || target.source_git)) {
+        if (target && target.source_url) {
+          return respond(400, { error: "source_url is disabled; use an owner-controlled GitHub repository or zip upload" });
+        }
+        if (target && (target.source_zip_b64 || target.source_git)) {
+          if (!ALLOW_TARGET_BUILDS) {
+            return respond(403, {
+              error: "untrusted target builds are disabled; use the demo target or enable them only in a disposable development environment",
+            });
+          }
           const build = await import(pathToFileURL(path.join(__dirname, "target-build.mjs")).href);
           const tag = `scb-bounty-${bounty_pda.slice(0, 12).toLowerCase()}`;
           if (target.source_git) {
@@ -193,13 +216,7 @@ const server = http.createServer((req, res) => {
             await build.buildTargetFromGit(target.source_git, tag);
           } else {
             let zip;
-            if (target.source_zip_b64) {
-              zip = Buffer.from(target.source_zip_b64, "base64");
-            } else {
-              const r = await fetch(target.source_url);
-              if (!r.ok) return respond(502, { error: `could not fetch target source: HTTP ${r.status}` });
-              zip = Buffer.from(await r.arrayBuffer());
-            }
+            zip = Buffer.from(target.source_zip_b64, "base64");
             log("building_target", { bounty: bounty_pda, tag, from: "zip" });
             await build.buildTargetImage(zip, tag);
           }

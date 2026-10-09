@@ -23,7 +23,7 @@ const CONTRACT_HEADER = (m: Manifest, machine: string, origTokens: string[]) => 
 #   including the setarch personality prefix below when determinism.aslr=off.
 #   Anything that works against 'target' inside this compose network MUST
 #   reproduce identically in the single verification run:
-#     spawn = ["setarch", "${machine}", "-R"] + ${JSON.stringify(origTokens)}
+#     spawn = ${JSON.stringify(m.determinism.aslr === "off" ? ["setarch", machine, "-R", ...origTokens] : origTokens)}
 #   and SEED=${m.determinism.seed} is exported to the process environment.
 #   Do not edit by hand — regenerate with scb-pack.
 # -----------------------------------------------------------------------------`;
@@ -49,12 +49,10 @@ function chunkLine(s: string, max: number): string[] {
 export function renderCompose(
   m: Manifest,
   imageTag: string,
-  imageArch: string,
-  origEntrypoint: string[],
-  origCmd: string[]
+  imageArch: string
 ): string {
   const machine = machineOf(imageArch);
-  const origTokens = [...origEntrypoint, ...origCmd];
+  const origTokens = m.entrypoint;
   const lines: string[] = [];
 
   lines.push(CONTRACT_HEADER(m, machine, origTokens));
@@ -65,21 +63,9 @@ export function renderCompose(
   lines.push(`    image: ${imageTag}`);
   lines.push("    networks:");
   lines.push("      scbnet: {}");
-  if (m.determinism.aslr === "off") {
-    if (origTokens.length === 0) {
-      // Caller validated earlier; defensive line keeps generated file honest.
-      lines.push("    command: [\"sleep\", \"infinity\"] # NOTE: image had no entrypoint/cmd");
-    } else {
-      lines.push("    entrypoint:");
-      lines.push("      - /bin/sh");
-      lines.push("      - -c");
-      lines.push(`      - exec setarch ${machine} -R "$@"`);
-      lines.push("      - --");
-      for (const tok of origTokens) {
-        lines.push(`      - ${JSON.stringify(tok)}`);
-      }
-    }
-  }
+  const spawn = m.determinism.aslr === "off" ? ["setarch", machine, "-R", ...origTokens] : origTokens;
+  lines.push(`    entrypoint: ${JSON.stringify(spawn)}`);
+  lines.push("    command: []");
   if (m.target.kind === "tcp_service") {
     lines.push("    expose:");
     lines.push(`      - "${m.target.port}"`);

@@ -1,4 +1,4 @@
-// Mock enclave: speaks the exact HTTP surface src/lib/runner.ts expects, and doubles
+// Development-only, in-memory mock: speaks the HTTP surface src/lib/runner.ts expects, and doubles
 // as the relayer that lands the verdict on-chain.
 //
 // What it is NOT: it does not build or run the target environment, does not execute the
@@ -72,7 +72,9 @@ export async function serve({ keys, force, log = console.log }) {
   const connection = connect();
   const program = makeProgram(connection, keys.relayer);
 
-  // bountyPda:exploitSha -> { solver, sealed }
+  // Development-only volatile storage. Real deployments persist the encrypted
+  // record before acknowledging this receipt; this mock loses it on restart.
+  // receipt -> { pda, exploitSha, solver, sealed }
   const pending = new Map();
 
   const server = http.createServer(async (req, res) => {
@@ -104,14 +106,16 @@ export async function serve({ keys, force, log = console.log }) {
         if (!pda || !exploitSha || !sealedB64) {
           return send(res, 400, { error: "bounty_pda, claimed_chain_view and exploit_sealed_box are required" });
         }
-        // The real enclave verifies submit_intent_sig here; the mock records it and
-        // moves on. It cannot be forged into a PASS anyway — the on-chain solver comes
-        // from the submit_exploit transaction, not from this payload.
+        // This development mock does not verify submit_intent_sig or execute
+        // the target. Its receipts do not prove persistence or TEE security.
         const sealed = new Uint8Array(Buffer.from(sealedB64, "base64"));
-        pending.set(`${pda}:${exploitSha}`, { solver: String(body.solver_pubkey ?? ""), sealed });
-        const blob_url = `mock://${pda}/${exploitSha.slice(0, 16)}`;
+        const solver = String(body.solver_pubkey ?? "");
+        const receipt = hex(sha256(Buffer.from(JSON.stringify([
+          "scb-dev-mock-upload-v1", pda, solver, view, sealedB64,
+        ]))));
+        pending.set(receipt, { pda, exploitSha, solver, sealed });
         log(`upload       ${pda} sha=${exploitSha.slice(0, 16)}… (${sealed.length} B sealed)`);
-        return send(res, 200, { blob_url });
+        return send(res, 200, { receipt });
       }
 
       return send(res, 404, { error: `no route for ${req.method} ${url.pathname}` });
@@ -124,7 +128,7 @@ export async function serve({ keys, force, log = console.log }) {
 
   async function tick() {
     for (const [key, entry] of [...pending]) {
-      const [pdaStr, exploitSha] = key.split(":");
+      const { pda: pdaStr, exploitSha } = entry;
       let bountyKey;
       try {
         bountyKey = new PublicKey(pdaStr);
@@ -149,6 +153,8 @@ export async function serve({ keys, force, log = console.log }) {
       }
       if (status !== "awaitingResolution" || !acct.currentSubmission) continue;
       if (hex(bytes(acct.currentSubmission.exploitSha256)) !== exploitSha) continue;
+      if (acct.currentSubmission.solver.toBase58() !== entry.solver) continue;
+      if (acct.currentSubmission.blobUrl !== `scb:submission:v1:${key}`) continue;
 
       const plaintext = await openSealed(entry.sealed, keys.enclaveEnc);
       if (!plaintext) {

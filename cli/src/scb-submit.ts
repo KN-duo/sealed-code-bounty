@@ -22,6 +22,8 @@ import {
   encodeSubmitExploitData,
   parseBountyFields,
   parseEnclavePkFromConfig,
+  parseUploadResponse,
+  submissionReference,
   DEFAULT_PROGRAM_ID,
 } from "./submit-lib";
 
@@ -40,7 +42,6 @@ interface Opts {
   bounty: string;
   file: string;
   enclaveUrl: string;
-  blobUrl?: string;
   programId: string;
   wait?: boolean;
   dryRun?: boolean;
@@ -104,7 +105,7 @@ async function run(o: Opts): Promise<void> {
     );
     console.log(
       "[dry-run] submit_exploit data length:",
-      encodeSubmitExploitData(bountyId, blobUrlPlaceholder(), shaBuf).length
+      encodeSubmitExploitData(bountyId, submissionReference("0".repeat(64)), shaBuf).length
     );
     return;
   }
@@ -142,9 +143,6 @@ async function run(o: Opts): Promise<void> {
     }
   );
 
-  const blobUrl =
-    o.blobUrl ?? `https://blob.local/${built.plaintextShaHex}`;
-
   // ---- e. enclave upload --------------------------------------------------
   const uploadRes = await fetch(`${o.enclaveUrl}/internal/upload`, {
     method: "POST",
@@ -162,7 +160,8 @@ async function run(o: Opts): Promise<void> {
       `upload failed HTTP ${uploadRes.status}: ${await uploadRes.text()}`
     );
   }
-  const receipt = ((await uploadRes.json()) as { receipt: string }).receipt;
+  const { receipt } = parseUploadResponse(await uploadRes.json());
+  const blobUrl = submissionReference(receipt);
 
   // ---- f. on-chain registration -------------------------------------------
   const data = encodeSubmitExploitData(
@@ -217,9 +216,6 @@ async function run(o: Opts): Promise<void> {
 function createSha256(data: Uint8Array): string {
   return createHash("sha256").update(data).digest("hex");
 }
-function blobUrlPlaceholder(): string {
-  return "https://blob.local/x";
-}
 
 const program = new Command();
 program
@@ -230,7 +226,6 @@ program
   .requiredOption("--bounty <buyer:bounty_id>", "bounty identity as buyer_pubkey:numeric_id")
   .requiredOption("--file <path>", "exploit script (python3 + pwntools)")
   .option("--enclave-url <url>", "verifier enclave base URL (required unless --dry-run)")
-  .option("--blob-url <url>", "blob_url recorded on-chain (default https://blob.local/<sha>)")
   .option("--program-id <pubkey>", "program id", DEFAULT_PROGRAM_ID)
   .option("--wait", "poll until the bounty leaves AwaitingResolution")
   .option("--dry-run", "print payload shapes without any network")

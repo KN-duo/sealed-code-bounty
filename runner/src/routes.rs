@@ -3,9 +3,11 @@
 use crate::error::ApiError;
 use crate::flag;
 use crate::intent;
-use crate::redact;
 use crate::sandbox::{RunParams, SandboxError};
-use crate::state::{AppState, BlobRecord, ChainView};
+use crate::state::{AppState, ChainView};
+use crate::submission_store::{
+    receipt_for, valid_receipt, StoreError, StoredSubmission, MAX_OBJECT_BYTES,
+};
 use axum::extract::{ConnectInfo, State};
 use axum::http::StatusCode;
 use axum::Json;
@@ -15,6 +17,7 @@ use sha2::Digest;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
+use zeroize::Zeroizing;
 
 pub const FLAG_PLACEHOLDER: &str = "{{FLAG}}";
 
@@ -46,9 +49,17 @@ pub struct UploadResponse {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VerifyRequest {
     pub bounty_pda: String,
+    /// Solver from the pending on-chain submission; required to disambiguate
+    /// multiple hunters who upload to the same bounty before submitting.
+    pub solver_pubkey: String,
+    /// Receipt extracted from the current on-chain `scb:submission:v1:` ref.
+    pub submission_receipt: String,
     pub claimed_chain_view: ChainView,
+    /// Hash of the exact canonical manifest bytes committed on chain.
+    pub manifest_sha256: Option<String>,
     /// Local path (or https URL, typed-unsupported for now) of the packed
     /// environment tarball. The runner loads + verifies its hash.
     #[serde(default)]
@@ -60,12 +71,19 @@ pub struct VerifyRequest {
     #[serde(default)]
     pub target_entrypoint: Vec<String>,
     /// tcp_service port from the manifest.
-    #[serde(default = "default_port")]
-    pub target_port: u16,
+    pub target_port: Option<u16>,
 }
 
-fn default_port() -> u16 {
-    1337
+fn store_error(error: StoreError) -> ApiError {
+    match error {
+        StoreError::InvalidReceipt | StoreError::HashMismatch => {
+            ApiError::Conflict(error.to_string())
+        }
+        StoreError::NotFound => ApiError::NotFound(error.to_string()),
+        StoreError::TooLarge => ApiError::PayloadTooLarge(error.to_string()),
+        StoreError::Full => ApiError::StorageFull,
+        StoreError::Unavailable => ApiError::StorageUnavailable,
+    }
 }
 
 /// Mirrors relayer/src/enclave-types.ts `VerifyResponse` exactly.
@@ -87,7 +105,9 @@ fn decode_bounty_pda(s: &str) -> Result<[u8; 32], ApiError> {
         .into_vec()
         .ok()
         .and_then(|v| v.try_into().ok())
-        .ok_or_else(|| ApiError::BadRequest("bounty_pda must be base58 for a 32-byte pubkey".into()))
+        .ok_or_else(|| {
+            ApiError::BadRequest("bounty_pda must be base58 for a 32-byte pubkey".into())
+        })
 }
 
 // ---- handlers ---------------------------------------------------------------
@@ -117,7 +137,9 @@ pub async fn upload(
     Json(req): Json<UploadRequest>,
 ) -> Result<(StatusCode, Json<UploadResponse>), ApiError> {
     if req.bounty_pda.is_empty() || req.solver_pubkey.is_empty() {
-        return Err(ApiError::BadRequest("empty bounty_pda or solver_pubkey".into()));
+        return Err(ApiError::BadRequest(
+            "empty bounty_pda or solver_pubkey".into(),
+        ));
     }
 
     // Rate limits BEFORE any crypto work — cheapest gate first. The client
@@ -146,12 +168,12 @@ pub async fn upload(
     // Unseal (cheap X25519 op) so the INTENT GATE binds the PLAINTEXT hash
     // exactly as §4.3 specifies — then reject impostors before any heavy work.
     let pda = decode_bounty_pda(&req.bounty_pda)?;
-    let plaintext = state
-        .config()
-        .enclave_enc_secret
-        .unseal(&sealed)
-        .map_err(|_| ApiError::BadRequest("exploit_sealed_box does not decrypt under the enclave key".into()))?;
-    let plaintext_sha256: [u8; 32] = sha2::Sha256::digest(&plaintext).into();
+    let plaintext = Zeroizing::new(state.config().enclave_enc_secret.unseal(&sealed).map_err(
+        |_| {
+            ApiError::BadRequest("exploit_sealed_box does not decrypt under the enclave key".into())
+        },
+    )?);
+    let plaintext_sha256: [u8; 32] = sha2::Sha256::digest(&*plaintext).into();
     intent::verify_intent(
         &pda,
         &plaintext_sha256,
@@ -160,41 +182,49 @@ pub async fn upload(
     )
     .map_err(|e| ApiError::IntentForbidden(e.to_string()))?;
 
-    // Storage cap accounting covers both ciphertext and kept plaintext.
-    if !state.storage_try_reserve(plaintext.len() as u64) {
-        return Err(ApiError::StorageFull);
+    let chain_bytes = req
+        .claimed_chain_view
+        .to_bytes()
+        .map_err(ApiError::BadRequest)?;
+    if plaintext_sha256 != chain_bytes.exploit_sha256 {
+        return Err(ApiError::Conflict(
+            "exploit_sha256 does not match decrypted submission".into(),
+        ));
     }
 
-    let record = BlobRecord {
-        solver_pubkey_b58: req.solver_pubkey.clone(),
-        bounty_pda_b58: req.bounty_pda.clone(),
-        plaintext,
-        chain_view: ChainView {
+    let stored = StoredSubmission {
+        version: 1,
+        solver_pubkey: bs58::encode(hex_or_b58_to_32(&req.solver_pubkey)?).into_string(),
+        bounty_pda: bs58::encode(pda).into_string(),
+        claimed_chain_view: ChainView {
             env_blob_sha256: req.claimed_chain_view.env_blob_sha256.clone(),
             buyer_enc_pk: req.claimed_chain_view.buyer_enc_pk.clone(),
             flag_commitment: req.claimed_chain_view.flag_commitment.clone(),
             exploit_sha256: req.claimed_chain_view.exploit_sha256.clone(),
         },
-        created_at: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        registered: false,
+        submit_intent_sig: req.submit_intent_sig.clone(),
+        exploit_sealed_box: base64::engine::general_purpose::STANDARD.encode(&sealed),
     };
-
-    let receipt_hex = hex::encode(sha2::Sha256::digest(
-        [
-            sealed.as_slice(),
-            req.solver_pubkey.as_bytes(),
-            req.bounty_pda.as_bytes(),
-        ]
-        .concat(),
-    ));
-
-    state.store_upload(&req.bounty_pda, receipt_hex.clone(), record);
+    let object = serde_json::to_vec(&stored)
+        .map_err(|_| ApiError::Internal("could not encode encrypted submission".into()))?;
+    if object.len() > MAX_OBJECT_BYTES {
+        return Err(ApiError::PayloadTooLarge(
+            "stored encrypted submission exceeds object limit".into(),
+        ));
+    }
+    let receipt_hex = receipt_for(&object);
+    state
+        .store_submission(&receipt_hex, &stored)
+        .await
+        .map_err(store_error)?;
     tracing::info!(bounty = %req.bounty_pda, receipt = %receipt_hex, "upload stored");
 
-    Ok((StatusCode::CREATED, Json(UploadResponse { receipt: receipt_hex })))
+    Ok((
+        StatusCode::CREATED,
+        Json(UploadResponse {
+            receipt: receipt_hex,
+        }),
+    ))
 }
 
 trait B64LenExt {
@@ -220,26 +250,50 @@ fn hex_or_b58_to_32(s: &str) -> Result<[u8; 32], ApiError> {
         .into_vec()
         .ok()
         .and_then(|v| v.try_into().ok())
-        .ok_or_else(|| ApiError::BadRequest("solver_pubkey is neither hex nor base58 32 bytes".into()))
+        .ok_or_else(|| {
+            ApiError::BadRequest("solver_pubkey is neither hex nor base58 32 bytes".into())
+        })
 }
 
 pub async fn verify(
     State(state): State<Arc<AppState>>,
     Json(req): Json<VerifyRequest>,
 ) -> Result<Json<VerifyResponse>, ApiError> {
-    let (receipt_hex, record_peek) = state
-        .peek_latest_upload_for_bounty(&req.bounty_pda)
-        .ok_or_else(|| ApiError::NotFound("no pending upload for this bounty".into()))?;
-    let record = record_peek.clone();
+    let _verification = state.try_verification().ok_or(ApiError::VerifierBusy)?;
+    if state.config().artifact_source.is_some()
+        && (req.env_blob_path.is_some()
+            || req.target_image.is_some()
+            || !req.target_entrypoint.is_empty()
+            || req.target_port.is_some())
+    {
+        return Err(ApiError::BadRequest(
+            "target overrides are disabled with vsock artifact storage".into(),
+        ));
+    }
+    let solver_pubkey = bs58::encode(hex_or_b58_to_32(&req.solver_pubkey)?).into_string();
+    if !valid_receipt(&req.submission_receipt) {
+        return Err(ApiError::BadRequest(
+            "submission_receipt must be 64 lowercase hex characters".into(),
+        ));
+    }
+    let stored = state
+        .load_submission(&req.submission_receipt)
+        .await
+        .map_err(store_error)?;
+    if stored.bounty_pda != req.bounty_pda || stored.solver_pubkey != solver_pubkey {
+        return Err(ApiError::NotFound(
+            "no encrypted submission matches this on-chain submission".into(),
+        ));
+    }
 
     // Chain-view divergence → hard conflict; the enclave never guesses which
     // side is right (review R1 seam).
-    let stored = &record.chain_view;
+    let uploaded = &stored.claimed_chain_view;
     let claimed = &req.claimed_chain_view;
-    let differs = stored.env_blob_sha256 != claimed.env_blob_sha256
-        || stored.buyer_enc_pk != claimed.buyer_enc_pk
-        || stored.flag_commitment != claimed.flag_commitment
-        || stored.exploit_sha256 != claimed.exploit_sha256;
+    let differs = uploaded.env_blob_sha256 != claimed.env_blob_sha256
+        || uploaded.buyer_enc_pk != claimed.buyer_enc_pk
+        || uploaded.flag_commitment != claimed.flag_commitment
+        || uploaded.exploit_sha256 != claimed.exploit_sha256;
     if differs {
         return Err(ApiError::Conflict(format!(
             "claimed_chain_view diverges from enclave-side values for bounty {}",
@@ -261,63 +315,152 @@ pub async fn verify(
     }
 
     let cv_bytes = claimed.to_bytes().map_err(ApiError::BadRequest)?;
-    let solver_bytes: [u8; 32] = bs58::decode(&record.solver_pubkey_b58)
+    let solver_bytes: [u8; 32] = bs58::decode(&stored.solver_pubkey)
         .into_vec()
         .ok()
         .and_then(|v| v.try_into().ok())
         .ok_or_else(|| ApiError::BadRequest("stored solver pubkey invalid".into()))?;
 
+    let sealed = base64::engine::general_purpose::STANDARD
+        .decode(&stored.exploit_sealed_box)
+        .map_err(|_| ApiError::Conflict("stored encrypted submission is malformed".into()))?;
+    if sealed.len() > MAX_SEALED_BOX_BYTES {
+        return Err(ApiError::Conflict(
+            "stored encrypted submission exceeds allowed size".into(),
+        ));
+    }
+    let plaintext = Zeroizing::new(
+        state
+            .config()
+            .enclave_enc_secret
+            .unseal(&sealed)
+            .map_err(|_| {
+                ApiError::Conflict("stored encrypted submission cannot be opened".into())
+            })?,
+    );
+    let plaintext_sha256: [u8; 32] = sha2::Sha256::digest(&*plaintext).into();
+    if hex::encode(plaintext_sha256) != claimed.exploit_sha256.to_ascii_lowercase() {
+        return Err(ApiError::Conflict(
+            "stored submission hash does not match chain".into(),
+        ));
+    }
+    intent::verify_intent(
+        &pda,
+        &plaintext_sha256,
+        &solver_bytes,
+        &stored.submit_intent_sig,
+    )
+    .map_err(|_| ApiError::Conflict("stored submission intent signature is invalid".into()))?;
+
     // ---- sandbox execution (typed Unsupported => HTTP 501) -----------------
-    let rootfs_dir = state.config().work_dir.join(format!("rootfs-{receipt_hex}"));
+    let receipt_hex = &req.submission_receipt;
+    let rootfs_dir = state
+        .config()
+        .work_dir
+        .join(format!("rootfs-{receipt_hex}"));
     let work_dir = state.config().work_dir.join(format!("work-{receipt_hex}"));
-    let env_blob_path = req.env_blob_path.as_deref().map(Path::new);
+    let mut environment = None;
+    let mut manifest = None;
+    if let Some(source) = &state.config().artifact_source {
+        let hash = req
+            .manifest_sha256
+            .as_deref()
+            .filter(|h| valid_receipt(h))
+            .ok_or_else(|| {
+                ApiError::BadRequest("manifest_sha256 is required for artifact retrieval".into())
+            })?;
+        std::fs::create_dir_all(&state.config().work_dir)
+            .map_err(|_| ApiError::Internal("could not prepare artifact directory".into()))?;
+        let staged = crate::artifacts::fetch(
+            source.as_ref(),
+            crate::artifacts::Kind::Manifest,
+            hash,
+            &state.config().work_dir,
+        )
+        .await
+        .map_err(store_error)?;
+        let bytes = std::fs::read(staged.path()).map_err(|_| ApiError::StorageUnavailable)?;
+        let parsed = crate::manifest::Manifest::parse(&bytes, &claimed.env_blob_sha256)
+            .map_err(|e| ApiError::BadRequest(e.into()))?;
+        if matches!(parsed.target, crate::manifest::Target::Binary { .. }) {
+            return Err(ApiError::NotImplemented(
+                "binary stdio target execution is not implemented".into(),
+            ));
+        }
+        environment = Some(
+            crate::artifacts::fetch(
+                source.as_ref(),
+                crate::artifacts::Kind::Environment,
+                &claimed.env_blob_sha256,
+                &state.config().work_dir,
+            )
+            .await
+            .map_err(store_error)?,
+        );
+        manifest = Some(parsed);
+    }
+    let env_blob_path = environment
+        .as_ref()
+        .map(|file| file.path())
+        .or_else(|| req.env_blob_path.as_deref().map(Path::new));
+    let target_port = match manifest.as_ref().map(|m| &m.target) {
+        Some(crate::manifest::Target::TcpService { port, .. }) => *port,
+        _ => req.target_port.unwrap_or(1337),
+    };
     let run_params = RunParams {
         rootfs_dir: &rootfs_dir,
         work_dir: &work_dir,
-        exploit_py: &record.plaintext,
+        exploit_py: &plaintext,
         env_blob_path,
         target_image: req.target_image.clone(),
-        target_entrypoint: req.target_entrypoint.clone(),
+        target_entrypoint: manifest
+            .as_ref()
+            .map(|m| m.entrypoint.clone())
+            .unwrap_or_else(|| req.target_entrypoint.clone()),
         target_host: "target".to_string(),
         target_network: state.config().network.clone(),
-        target_port: req.target_port,
-        timeout_secs: 60,
-        memory_mb: 512,
+        target_port,
+        timeout_secs: manifest.as_ref().map_or(60, |m| m.limits.timeout_seconds),
+        memory_mb: manifest.as_ref().map_or(512, |m| m.limits.memory_mb),
         cpus: 1.0,
-        aslr_off: true,
-        seed: 0,
+        aslr_off: manifest
+            .as_ref()
+            .is_none_or(|m| m.determinism.aslr == "off"),
+        seed: manifest
+            .as_ref()
+            .map_or(0, |m| i64::from(m.determinism.seed)),
     };
 
     match state.config().sandbox.run_exploit(&run_params).await {
         Err(SandboxError::Unsupported(w)) => {
-            // Typed stub: leave the upload in place (TTL sweeper purges it in
-            // 30 min) so a future runner with a real sandbox can serve it.
-            Err(ApiError::NotImplemented(format!("sandbox unavailable: {w}")))
+            // Keep the encrypted object for restart recovery and retry.
+            Err(ApiError::NotImplemented(format!(
+                "sandbox unavailable: {w}"
+            )))
         }
         Err(SandboxError::Timeout) => {
-            let mut resp =
-                fail_response(&state, &cv_bytes, &solver_bytes, &pda);
-            resp.redacted_log = "[timeout] no output captured".to_string();
-            state.consume_upload(&receipt_hex);
+            let mut resp = fail_response(&state, &cv_bytes, &solver_bytes, &pda);
+            resp.redacted_log = "execution timed out".to_string();
             Ok(Json(resp))
         }
         Err(e) => Err(ApiError::Internal(format!("sandbox failure: {e}"))),
         Ok(exec_outcome) => {
             let pass = exec_outcome.output.contains(flag.expose());
-            let mut redacted_log = redact::redact(&exec_outcome.output, &flag);
-
-            // Fail-closed paranoia sweep: if ANY encoding survived redaction,
-            // emit FAIL with an empty log rather than risk a leak.
-            if redact::leaks(&redacted_log, &flag) {
-                tracing::error!(bounty = %req.bounty_pda, "REDACTION LEAK — failing closed");
-                return Ok(Json(fail_response(&state, &cv_bytes, &solver_bytes, &pda)));
-            }
+            // Execution output can contain challenge secrets or attacker data.
+            // Never return it from the public runner API.
+            let safe_log = if pass {
+                "execution completed (PASS)"
+            } else {
+                "execution completed (FAIL)"
+            };
 
             let response = if pass {
                 let buyer_pk = crypto_box::PublicKey::from(cv_bytes.buyer_enc_pk);
                 let ct = buyer_pk
-                    .seal(&mut rand::rngs::OsRng, &record.plaintext)
-                    .map_err(|e| ApiError::Internal(format!("sealed box encryption failed: {e}")))?;
+                    .seal(&mut rand::rngs::OsRng, &plaintext)
+                    .map_err(|e| {
+                        ApiError::Internal(format!("sealed box encryption failed: {e}"))
+                    })?;
                 let ct_sha = sha2::Sha256::digest(&ct);
                 VerifyResponse {
                     outcome: true,
@@ -325,23 +468,15 @@ pub async fn verify(
                     reveal_ciphertext: Some(base64::engine::general_purpose::STANDARD.encode(ct)),
                     reveal_ciphertext_url: None,
                     reveal_ciphertext_sha256: Some(hex::encode(ct_sha)),
-                    redacted_log,
+                    redacted_log: safe_log.to_string(),
                 }
             } else {
-                let mut resp =
-                    fail_response(&state, &cv_bytes, &solver_bytes, &pda);
-                resp.redacted_log = std::mem::take(&mut redacted_log); // audit L5
+                let mut resp = fail_response(&state, &cv_bytes, &solver_bytes, &pda);
+                resp.redacted_log = safe_log.to_string();
                 return Ok(Json(resp));
             };
-            // Audit M1: consume now that a verdict exists, releasing the
-            // storage reservation, and ZEROIZE every plaintext buffer.
-            if let Some(mut consumed) = state.consume_upload(&receipt_hex) {
-                consumed.plaintext.fill(0);
-            }
-            drop(record_peek);
-            let mut local = record;
-            local.plaintext.fill(0);
-            drop(local);
+            // `Zeroizing` erases the enclave plaintext on every response path;
+            // the immutable encrypted record remains for retry/restart safety.
             Ok(Json(response))
         }
     }
@@ -395,4 +530,3 @@ pub fn router(state: std::sync::Arc<AppState>) -> axum::Router {
         .route("/internal/verify", post(verify))
         .with_state(state)
 }
-

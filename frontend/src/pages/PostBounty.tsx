@@ -22,7 +22,6 @@ import { useProgram } from "../hooks/useProgram";
 import { useConfig } from "../hooks/useData";
 import { downloadBackup } from "../lib/backup";
 import { bytesToHex, hexToBytes, solToLamports } from "../lib/format";
-import { sha256Bytes } from "../lib/crypto";
 import { buildManifest, downloadManifest, manifestSha256Hex, validateForm } from "../lib/manifest";
 import type { ManifestForm, TargetKind } from "../lib/manifest";
 import { bountyPda } from "../lib/pda";
@@ -42,15 +41,17 @@ function randomBountyId(): anchor.BN {
 }
 
 const DEFAULT_FORM: ManifestForm = {
+  name: "challenge",
   imageUrl: "",
   imageSha256: "",
   kind: "tcp_service",
-  entrypoint: "./run.sh",
+  entrypoint: '["./run.sh"]',
+  port: 1337,
   memoryMb: 512,
   timeoutS: 60,
   deterministic: true,
   seed: 0,
-  flagPlaceholder: "FLAG{...}",
+  flagPlaceholder: "{{FLAG}}",
 };
 
 export function PostBounty() {
@@ -73,6 +74,7 @@ export function PostBounty() {
   const [targetPort, setTargetPort] = useState(1337);
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
+  const [authorizedTarget, setAuthorizedTarget] = useState(false);
   const [prizeSol, setPrizeSol] = useState("0.5");
   const [deadlineLocal, setDeadlineLocal] = useState(() => {
     const d = new Date(Date.now() + 7 * 86400_000);
@@ -127,14 +129,10 @@ export function PostBounty() {
     setError(null);
     setBusy(true);
     try {
+      if (hasTarget) throw new Error("Source archive publishing is not available yet; use a packaged image tarball.");
       const manifest = buildManifest(form);
       const manifestSha = hexToBytes(manifestSha256Hex(manifest));
-      // With a GitHub/zip target the environment blob is built by the verifier,
-      // not pinned from a tarball hash, so derive a stable placeholder for the
-      // on-chain env_blob_sha256 instead of demanding one.
-      const envBlobSha = hasTarget
-        ? sha256Bytes(new TextEncoder().encode(`scb-target:${targetGit.trim() || targetName || "zip"}`))
-        : hexToBytes(form.imageSha256.trim());
+      const envBlobSha = hexToBytes(manifest.image_tarball.sha256);
 
       // 1) enclave seals the environment (building the company's target if one
       //    was uploaded) and returns the flag commitment.
@@ -172,10 +170,8 @@ export function PostBounty() {
     }
   }
 
-  // The tarball-URL manifest is only needed without a built target; with a
-  // GitHub/zip target those fields are hidden and their validation skipped.
   const formErrors = hasTarget
-    ? validateForm(form).filter((e) => !/image tarball/i.test(e))
+    ? ["Source archive publishing is not available yet. Clear the source selection and use a packaged image tarball."]
     : validateForm(form);
   const prizeValid = Number(prizeSol) > 0;
   const deadlineValid = new Date(deadlineLocal).getTime() > Date.now();
@@ -357,8 +353,8 @@ export function PostBounty() {
 
           {hasTarget ? (
             <p className="dim" style={{ fontSize: 13 }}>
-              The verifier builds and pins the environment from your target above — no
-              tarball URL needed.
+              Source archive publishing needs a build service that returns the exact
+              environment hash. Use a packaged image tarball for the manifest.
             </p>
           ) : (
           <>
@@ -367,6 +363,9 @@ export function PostBounty() {
             The environment the verifier boots and the rules it runs under (schema v2).
           </p>
 
+          <Field label="Challenge name">
+            <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+          </Field>
           <Field label="Image tarball URL" hint="https:// link to the environment tarball.">
             <Input
               value={form.imageUrl}
@@ -393,7 +392,7 @@ export function PostBounty() {
                 <option value="binary">binary</option>
               </select>
             </Field>
-            <Field label="Entrypoint">
+            <Field label="Entrypoint" hint={'JSON argument array, for example ["./run.sh", "--port", "1337"].'}>
               <Input
                 value={form.entrypoint}
                 onChange={(e) => setForm({ ...form, entrypoint: e.target.value })}
@@ -405,6 +404,8 @@ export function PostBounty() {
             <Field label="Memory (MB)">
               <Input
                 type="number"
+                min={16}
+                max={512}
                 value={form.memoryMb}
                 onChange={(e) => setForm({ ...form, memoryMb: Number(e.target.value) })}
               />
@@ -412,12 +413,19 @@ export function PostBounty() {
             <Field label="Timeout (s)">
               <Input
                 type="number"
+                min={1}
+                max={60}
                 value={form.timeoutS}
                 onChange={(e) => setForm({ ...form, timeoutS: Number(e.target.value) })}
               />
             </Field>
           </div>
 
+          {form.kind === "tcp_service" && (
+            <Field label="Service port">
+              <Input type="number" min={1} max={65535} value={form.port} onChange={(e) => setForm({ ...form, port: Number(e.target.value) })} />
+            </Field>
+          )}
           <Field label="Flag placeholder" hint="The token replaced by the real secret flag at seal time.">
             <Input
               value={form.flagPlaceholder}
@@ -472,6 +480,25 @@ export function PostBounty() {
       {step === "review" && (
         <Card style={{ padding: 24 }} className="stack">
           <h3>Review &amp; post</h3>
+          <Card style={{ padding: 14, borderColor: "rgba(255,180,84,.5)" }} className="stack">
+            <label className="row" style={{ alignItems: "flex-start", cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={authorizedTarget}
+                onChange={(e) => setAuthorizedTarget(e.target.checked)}
+                style={{ marginTop: 3 }}
+              />
+              <span>
+                I own this target or have explicit permission to test it. It contains no
+                production credentials or personal data, and this bounty is limited to the
+                isolated challenge environment.
+              </span>
+            </label>
+            <span className="dim" style={{ fontSize: 13 }}>
+              Third-party systems, malware, persistence, destructive payloads, and sandbox
+              escape attempts are prohibited by the project security policy.
+            </span>
+          </Card>
           <div className="stack" style={{ gap: 12 }}>
             <ReviewRow label="Prize">
               <Mono>{prizeSol} SOL</Mono>
@@ -515,7 +542,7 @@ export function PostBounty() {
             <Button variant="ghost" onClick={() => setStep("manifest")} disabled={busy}>
               Back
             </Button>
-            <Button variant="primary" loading={busy} onClick={onPost}>
+            <Button variant="primary" loading={busy} disabled={!authorizedTarget} onClick={onPost}>
               Seal &amp; post bounty
             </Button>
           </div>

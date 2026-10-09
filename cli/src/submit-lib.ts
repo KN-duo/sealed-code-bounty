@@ -39,6 +39,30 @@ export const DEFAULT_PROGRAM_ID =
   "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V";
 export const INTENT_TAG = Buffer.from("SCB_SUBMIT_V1", "ascii");
 
+export interface UploadResponse {
+  receipt: string;
+}
+
+/** Opaque encrypted-record receipt; never substitute the plaintext hash. */
+export function submissionReference(receipt: string): string {
+  if (typeof receipt !== "string" || receipt.length !== 64 || !/^[0-9a-f]{64}$/.test(receipt)) {
+    throw new Error("Verifier returned an invalid upload receipt.");
+  }
+  return `scb:submission:v1:${receipt}`;
+}
+
+export function parseUploadResponse(value: unknown): UploadResponse {
+  if (
+    typeof value !== "object" || value === null || Array.isArray(value) ||
+    Object.keys(value).length !== 1 || !("receipt" in value) ||
+    typeof value.receipt !== "string"
+  ) {
+    throw new Error("Verifier returned an invalid upload receipt.");
+  }
+  submissionReference(value.receipt);
+  return { receipt: value.receipt };
+}
+
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for tests)
 // ---------------------------------------------------------------------------

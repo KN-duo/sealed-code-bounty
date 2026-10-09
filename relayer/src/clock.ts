@@ -14,7 +14,7 @@ const CLOCK_SYSVAR = new PublicKey(
 export async function chainClock(connection: Connection): Promise<number> {
   const info = await connection.getAccountInfo(CLOCK_SYSVAR);
   if (!info || info.data.length < 40) {
-    return Math.floor(Date.now() / 1000);
+    throw new Error("chain Clock sysvar unavailable; refusing a local-clock unlock decision");
   }
   return Number(info.data.readBigInt64LE(32));
 }

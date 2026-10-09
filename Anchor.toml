@@ -5,15 +5,12 @@ package_manager = "npm"
 resolution = true
 skip-lint = false
 
-[programs.localnet]
-sealed_code_bounty = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
-
-# Kept only for the optional devnet smoke test (see tests/, gated behind SCB_DEVNET=1).
 [programs.devnet]
 sealed_code_bounty = "FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V"
 
-# localnet-first (v2): `anchor test` spins up a throwaway local validator by default —
-# fast, deterministic, free. Point at devnet only for the optional smoke test.
+[programs.localnet]
+sealed_code_bounty = "HV2TXWm5BhLxPwW12wBzPV6kRGTxANidDbKg7r88TVNA"
+
 [provider]
 cluster = "localnet"
 wallet = "~/.config/solana/id.json"
@@ -21,6 +18,9 @@ wallet = "~/.config/solana/id.json"
 [scripts]
 test = "npx ts-mocha -p ./tsconfig.json -t 1000000 \"tests/**/*.ts\""
 
-# Give the local validator a moment to come up before the suite connects.
+[hooks]
+
 [test]
 startup_wait = 10000
+shutdown_wait = 2000
+upgradeable = false

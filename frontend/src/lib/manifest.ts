@@ -1,25 +1,19 @@
-import { sha256Bytes } from "./crypto";
-import { bytesToHex } from "./format";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { manifestCanonicalJson, validateManifest } from "../../../shared/manifest.mjs";
+import type { Manifest } from "../../../shared/manifest.mjs";
 
-// Manifest schema v2 — the spec the enclave uses to build and run the target.
-// The env blob (image tarball) is content-addressed by its own sha256; the whole
-// manifest is committed on-chain by its sha256.
+export { manifestCanonicalJson } from "../../../shared/manifest.mjs";
+export type { Manifest } from "../../../shared/manifest.mjs";
 export type TargetKind = "tcp_service" | "binary";
 
-export interface Manifest {
-  schema: "v2";
-  image_tarball: { url: string; sha256: string };
-  target: { kind: TargetKind; entrypoint: string };
-  limits: { memory_mb: number; timeout_s: number };
-  determinism: { deterministic: boolean; seed: number };
-  flag_placeholder: string;
-}
-
 export interface ManifestForm {
+  name: string;
   imageUrl: string;
   imageSha256: string;
   kind: TargetKind;
+  // JSON array: tokens keep their boundaries; no shell string splitting.
   entrypoint: string;
+  port: number;
   memoryMb: number;
   timeoutS: number;
   deterministic: boolean;
@@ -28,51 +22,44 @@ export interface ManifestForm {
 }
 
 export function buildManifest(form: ManifestForm): Manifest {
-  return {
-    schema: "v2",
-    image_tarball: { url: form.imageUrl.trim(), sha256: form.imageSha256.trim().toLowerCase() },
-    target: { kind: form.kind, entrypoint: form.entrypoint.trim() },
-    limits: { memory_mb: form.memoryMb, timeout_s: form.timeoutS },
-    determinism: { deterministic: form.deterministic, seed: form.seed },
-    flag_placeholder: form.flagPlaceholder.trim(),
-  };
-}
-
-// Deterministic serialization (recursively sorted keys) so the committed
-// manifest_sha256 is reproducible regardless of property insertion order.
-function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stableStringify).join(",")}]`;
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
-}
-
-export function manifestCanonicalJson(m: Manifest): string {
-  return stableStringify(m);
+  let entrypoint: unknown;
+  try {
+    entrypoint = JSON.parse(form.entrypoint);
+  } catch {
+    throw new Error('Entrypoint must be a JSON argument array, for example ["./run.sh"].');
+  }
+  return validateManifest({
+    format_version: 2,
+    name: form.name.trim(),
+    image_tarball: { url: form.imageUrl.trim(), sha256: form.imageSha256.trim() },
+    target: form.kind === "tcp_service"
+      ? { kind: "tcp_service", host: "target", port: form.port }
+      : { kind: "binary", exec: Array.isArray(entrypoint) ? entrypoint[0] : undefined, io: "stdio", argv: Array.isArray(entrypoint) ? entrypoint.slice(1) : [] },
+    limits: { timeout_seconds: form.timeoutS, memory_mb: form.memoryMb, cpus: 1 },
+    determinism: { aslr: form.deterministic ? "off" : "on", seed: form.seed },
+    flag_placeholder: form.flagPlaceholder,
+    entrypoint,
+  });
 }
 
 export function manifestSha256Hex(m: Manifest): string {
-  const bytes = new TextEncoder().encode(manifestCanonicalJson(m));
-  return bytesToHex(sha256Bytes(bytes));
+  const bytes = sha256(new TextEncoder().encode(manifestCanonicalJson(m)));
+  return Array.from(bytes, b => b.toString(16).padStart(2, "0")).join("");
 }
 
-// Basic client-side validation; returns a list of human-readable problems.
 export function validateForm(form: ManifestForm): string[] {
-  const errs: string[] = [];
-  if (!/^https:\/\/.+/.test(form.imageUrl.trim()))
-    errs.push("Image tarball URL must be an https:// link.");
-  if (!/^[0-9a-fA-F]{64}$/.test(form.imageSha256.trim()))
-    errs.push("Image tarball sha256 must be 64 hex characters.");
-  if (form.entrypoint.trim().length === 0) errs.push("Entrypoint is required.");
-  if (form.flagPlaceholder.trim().length === 0) errs.push("Flag placeholder is required.");
-  if (form.memoryMb <= 0) errs.push("Memory limit must be positive.");
-  if (form.timeoutS <= 0) errs.push("Timeout must be positive.");
-  return errs;
+  const errors: string[] = [];
+  if (!/^https:\/\/.+/.test(form.imageUrl.trim())) errors.push("Image tarball URL must be an https:// link.");
+  try {
+    buildManifest(form);
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : "Invalid manifest.");
+  }
+  return errors;
 }
 
 export function downloadManifest(m: Manifest): void {
-  const blob = new Blob([JSON.stringify(m, null, 2)], { type: "application/json" });
+  const blob = new Blob([manifestCanonicalJson(m)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

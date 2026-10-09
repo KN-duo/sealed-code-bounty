@@ -4,6 +4,9 @@ import * as anchor from "@anchor-lang/core";
 import type { Program } from "@anchor-lang/core";
 import idl from "../idl/sealed_code_bounty.json";
 import type { SealedCodeBounty } from "../idl/sealed_code_bounty";
+import { PROGRAM_ID_STRING } from "../env";
+
+const runtimeIdl = { ...idl, address: PROGRAM_ID_STRING } as anchor.Idl;
 
 // A signing Program for WRITE paths (create/submit/cancel/close). Read paths use
 // anchorClient.getReadProgram(), which needs no wallet. Returns null until a
@@ -26,7 +29,7 @@ export function useProgram(): Program<SealedCodeBounty> | null {
     );
 
     return new anchor.Program(
-      idl as anchor.Idl,
+      runtimeIdl,
       provider,
     ) as unknown as Program<SealedCodeBounty>;
   }, [connection, wallet.publicKey, wallet.signTransaction, wallet.signAllTransactions]);

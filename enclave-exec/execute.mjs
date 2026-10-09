@@ -154,13 +154,16 @@ export async function judge(exploitBytes, opts = {}) {
 
     const output = `${run.stdout}${run.stderr}`;
     const pass = output.includes(flag);
+    // GNU timeout exits 124 when its limit fires (137 if the child required
+    // SIGKILL). execFile's outer watchdog reports `killed` instead.
+    const timedOut = Boolean(run.killed) || run.code === 124 || run.code === 137;
     return {
       pass,
       flag,
       output,
       reason: pass
         ? "exploit output contained the injected flag"
-        : run.killed
+        : timedOut
           ? "exploit timed out"
           : "exploit output did not contain the flag",
     };

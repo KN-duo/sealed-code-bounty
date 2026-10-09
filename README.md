@@ -2,14 +2,19 @@
 
 A confidential, automatically-verified **exploit bounty** protocol on Solana. A buyer posts a vulnerable environment and locks a prize in escrow; hunters submit exploits that are decrypted and run **only inside a hardware Trusted Execution Environment (TEE)**. An exploit succeeds if its output contains a hidden, platform-generated flag. On success the escrow releases to the hunter and the buyer receives the exploit; **on failure the exploit is never seen by anyone** — not the buyer, not the platform.
 
+> **Authorized challenges only.** This project evaluates intentionally
+> vulnerable environments supplied by their owner. Third-party targets,
+> production systems, malware, credential theft, persistence, destructive
+> payloads, and attempts to escape or contact systems outside the isolated
+> challenge are prohibited. See [Security scope and acceptable use](SECURITY_SCOPE.md).
+
 This removes the trust gap that existing bug-bounty platforms (Immunefi, HackerOne, Bugcrowd) structurally cannot close: today, submitting an exploit means trusting a human reviewer not to steal, leak, or reject-and-reuse your work before paying you. Here the human is replaced by a TEE-signed verdict the Solana program checks on-chain.
 
-> **Status:** v2 is under active construction on the `v2` branch. The **escrow
-> program works** (create / submit / resolve / cancel, tested on localnet), but
-> the current `resolve_submission` is an **insecure manual placeholder** and
-> submissions are currently **plaintext** — the confidential TEE verification
-> flow is exactly what the v2 build adds. The full, authoritative spec is
-> [`docs/BUILD_PLAN_v2.md`](docs/BUILD_PLAN_v2.md).
+> **Status:** pre-production. Local Docker execution and Solana escrow flows are
+> being integrated, but the verifier is not yet running in an attested Nitro
+> Enclave. Do not expose the local execution service publicly or use real
+> submissions until the Nitro, KMS, sandbox, and security-review gates pass.
+> Current implementation details are tracked in [`STATUS.md`](STATUS.md).
 
 ## Table of contents
 - [The problem](#the-problem)
@@ -19,6 +24,7 @@ This removes the trust gap that existing bug-bounty platforms (Immunefi, HackerO
 - [Repository layout](#repository-layout)
 - [Build & test](#build--test)
 - [Current status vs. the plan](#current-status-vs-the-plan)
+- [Security scope and acceptable use](SECURITY_SCOPE.md)
 - [§11 — Trust model (honest v1 disclosure)](#11--trust-model-honest-v1-disclosure)
 
 ## The problem

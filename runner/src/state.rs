@@ -1,16 +1,16 @@
-//! Shared server state: master secret, verdict key, upload store, rate
-//! limiters, storage-cap accounting, TTL sweeper.
+//! Shared server state: master secret, verdict key, durable encrypted
+//! submissions, and transient rate limiters.
 
 use crate::config::Config;
 use crate::flag;
 use ed25519_dalek::SigningKey;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The four chain-visible values the enclave cross-checks on /internal/verify.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ChainView {
     pub env_blob_sha256: String,
     pub buyer_enc_pk: String,
@@ -41,19 +41,6 @@ pub struct ChainViewBytes {
     pub buyer_enc_pk: [u8; 32],
     pub flag_commitment: [u8; 32],
     pub exploit_sha256: [u8; 32],
-}
-
-#[derive(Debug, Clone)]
-pub struct BlobRecord {
-    pub solver_pubkey_b58: String,
-    /// Bounty PDA (base58) this upload belongs to.
-    pub bounty_pda_b58: String,
-    /// Plaintext exploit — lives only in this process's memory.
-    pub plaintext: Vec<u8>,
-    pub chain_view: ChainView,
-    pub created_at: u64,
-    /// Flipped when /internal/verify consumes the blob (TTL sweeper skips it).
-    pub registered: bool,
 }
 
 /// Token bucket (capacity = window max, continuous refill).
@@ -87,12 +74,11 @@ pub struct AppState {
     cfg: Config,
     master_secret: [u8; 32],
     verdict_key: SigningKey,
-    uploads: Mutex<HashMap<String /*receipt hex*/, BlobRecord>>,
-    /// bounty_pda b58 -> receipt hex (newest wins).
-    latest_by_bounty: Mutex<HashMap<String, String>>,
+    submissions: Arc<dyn crate::submission_store::SubmissionStore>,
+    /// Exactly one sandbox may execute at a time, including direct API calls.
+    verification: tokio::sync::Mutex<()>,
     wallet_buckets: Mutex<HashMap<String, TokenBucket>>,
     ip_buckets: Mutex<HashMap<String, TokenBucket>>,
-    storage_used: AtomicU64,
 }
 
 fn now_unix() -> u64 {
@@ -106,15 +92,15 @@ impl AppState {
     pub fn new(cfg: Config) -> Self {
         let master_secret = cfg.master_secret;
         let verdict_key = SigningKey::from_bytes(&flag::derive_verdict_seed(&master_secret));
+        let submissions = cfg.submission_store.clone();
         Self {
             cfg,
             master_secret,
             verdict_key,
-            uploads: Mutex::new(HashMap::new()),
-            latest_by_bounty: Mutex::new(HashMap::new()),
+            submissions,
+            verification: tokio::sync::Mutex::new(()),
             wallet_buckets: Mutex::new(new_map()),
             ip_buckets: Mutex::new(new_map()),
-            storage_used: AtomicU64::new(0),
         }
     }
 
@@ -124,11 +110,6 @@ impl AppState {
 
     pub fn verdict_key(&self) -> &SigningKey {
         &self.verdict_key
-    }
-
-    /// Current reserved storage bytes (test/ops visibility).
-    pub fn storage_used(&self) -> u64 {
-        self.storage_used.load(Ordering::SeqCst)
     }
 
     pub fn master_secret(&self) -> &[u8; 32] {
@@ -164,99 +145,47 @@ impl AppState {
         )
     }
 
-    // ---- storage accounting ------------------------------------------------
+    // ---- durable encrypted submissions ------------------------------------
 
-    /// Reserves `bytes` against the global cap → false means HTTP 503.
-    pub fn storage_try_reserve(&self, bytes: u64) -> bool {
-        loop {
-            let cur = self.storage_used.load(Ordering::SeqCst);
-            if cur + bytes > self.cfg.storage_cap_bytes {
-                return false;
-            }
-            match self.storage_used.compare_exchange(
-                cur,
-                cur + bytes,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => return true,
-                Err(_) => continue,
-            }
-        }
-    }
-
-    pub fn storage_release(&self, bytes: u64) {
-        self.storage_used.fetch_sub(bytes, Ordering::SeqCst);
-    }
-
-    // ---- uploads -----------------------------------------------------------
-
-    pub fn store_upload(&self, bounty_pda_b58: &str, receipt_hex: String, record: BlobRecord) {
-        self.latest_by_bounty
-            .lock()
-            .expect("latest map")
-            .insert(bounty_pda_b58.to_string(), receipt_hex.clone());
-        self.uploads.lock().expect("uploads").insert(receipt_hex, record);
-    }
-
-    /// Peeks the newest upload for a bounty WITHOUT consuming it.
-    pub fn peek_latest_upload_for_bounty(
+    pub async fn store_submission(
         &self,
-        bounty_pda_b58: &str,
-    ) -> Option<(String, BlobRecord)> {
-        let key = {
-            let m = self.latest_by_bounty.lock().expect("latest map");
-            m.get(bounty_pda_b58).cloned()
-        }?;
-        let rec = self.uploads.lock().expect("uploads").get(&key).cloned();
-        rec.map(|r| (key, r))
+        receipt: &str,
+        submission: &crate::submission_store::StoredSubmission,
+    ) -> Result<(), crate::submission_store::StoreError> {
+        let bytes = serde_json::to_vec(submission)
+            .map_err(|_| crate::submission_store::StoreError::Unavailable)?;
+        self.submissions.put(receipt, &bytes).await
     }
 
-    /// Consumes (removes + releases storage) an upload once its verdict has
-    /// been produced. The caller MUST zeroize the returned plaintext buffer
-    /// before dropping it. Fixes audit M1 (uploads never freed).
-    pub fn consume_upload(&self, receipt_hex: &str) -> Option<BlobRecord> {
-        let rec = {
-            let mut uploads = self.uploads.lock().expect("uploads");
-            uploads.remove(receipt_hex)?
-        };
-        self.storage_release(rec.plaintext.len() as u64);
-        self.latest_by_bounty
-            .lock()
-            .expect("latest map")
-            .retain(|_, v| v != receipt_hex);
-        Some(rec)
-    }
-
-    /// TTL sweeper: purge unregistered uploads older than the window.
-    /// Returns number purged. Registered blobs are exempt.
-    pub fn sweep_expired(&self) -> usize {
-        let now = now_unix();
-        let cutoff = now.saturating_sub(self.cfg.blob_ttl_secs);
-        let mut purged = 0usize;
-        {
-            let mut uploads = self.uploads.lock().expect("uploads");
-            let expired: Vec<String> = uploads
-                .iter()
-                .filter(|(_, r)| !r.registered && r.created_at < cutoff)
-                .map(|(k, _)| k.clone())
-                .collect();
-            for key in expired {
-                if let Some(rec) = uploads.remove(&key) {
-                    self.storage_release(rec.plaintext.len() as u64);
-                    self.latest_by_bounty
-                        .lock()
-                        .expect("latest map")
-                        .retain(|_, v| v != &key);
-                    purged += 1;
-                }
-            }
+    pub async fn load_submission(
+        &self,
+        receipt: &str,
+    ) -> Result<crate::submission_store::StoredSubmission, crate::submission_store::StoreError>
+    {
+        let bytes = self.submissions.get(receipt).await?;
+        let submission: crate::submission_store::StoredSubmission = serde_json::from_slice(&bytes)
+            .map_err(|_| crate::submission_store::StoreError::HashMismatch)?;
+        if submission.version != 1 {
+            return Err(crate::submission_store::StoreError::HashMismatch);
         }
+        Ok(submission)
+    }
+
+    /// Reject concurrent work with backpressure rather than starting another
+    /// sandbox or retaining an unbounded queue of requests inside the runner.
+    pub fn try_verification(&self) -> Option<tokio::sync::MutexGuard<'_, ()>> {
+        self.verification.try_lock().ok()
+    }
+
+    /// TTL sweeper for transient in-memory rate-limit buckets. Encrypted
+    /// submissions are durable and must not expire while an on-chain bounty
+    /// may still refer to them.
+    pub fn sweep_expired(&self) -> usize {
         // Audit L3: evict rate-limit buckets idle for >2 windows so they do
         // not grow without bound. The IP bucket remains as a coarse backstop;
         // NAT users legitimately share it by design.
         let idle_secs = (self.cfg.rate_limit_window_secs * 2) as f64;
-        let nowf = now as f64;
+        let nowf = now_unix() as f64;
         self.wallet_buckets
             .lock()
             .expect("wallet buckets")
@@ -265,7 +194,7 @@ impl AppState {
             .lock()
             .expect("ip buckets")
             .retain(|_, b| nowf - b.updated_secs < idle_secs);
-        purged
+        0
     }
 
     /// Background sweeper task — spawned once at startup.
@@ -274,10 +203,7 @@ impl AppState {
             let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
             loop {
                 interval.tick().await;
-                let n = state.sweep_expired();
-                if n > 0 {
-                    tracing::info!(purged = n, "TTL sweeper purged unregistered uploads");
-                }
+                state.sweep_expired();
             }
         })
     }
@@ -286,5 +212,3 @@ impl AppState {
 fn new_map<K>() -> HashMap<K, TokenBucket> {
     HashMap::new()
 }
-
-

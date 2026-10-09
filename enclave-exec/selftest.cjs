@@ -127,6 +127,9 @@ async function runCase(label, exploitBytes, buyer, expectPass, target) {
     // no network to Arweave). The on-chain flow uses Arweave — proven separately.
     SCB_REVEAL_STORE: "inline",
     SCB_INLINE_MAX: "1000000",
+    // The per-bounty fixture deliberately builds a Dockerfile. Production keeps
+    // this off until builds run inside the reviewed enclave sandbox.
+    SCB_ALLOW_UNTRUSTED_TARGET_BUILDS: "1",
   };
   const child = spawn("node", [path.join(__dirname, "enclave.cjs")], { env, stdio: ["ignore", "inherit", "inherit"] });
   const kill = () => { try { child.kill("SIGKILL"); } catch { /* gone */ } };

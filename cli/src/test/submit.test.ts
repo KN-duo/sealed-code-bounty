@@ -14,6 +14,8 @@ import {
   buildIntentMessage,
   sha256,
   encodeSubmitExploitData,
+  parseUploadResponse,
+  submissionReference,
 } from "../submit-lib";
 
 function repoRoot(): string {
@@ -63,6 +65,34 @@ test("(IVb) sha256 helper matches node crypto for the fixture plaintext", () => 
   assert.equal(sha256(pt).toString("hex"), v.plaintext_sha256_hex);
 });
 
+test("upload receipt is encoded independently of the plaintext hash", () => {
+  const receipt = "0123456789abcdef".repeat(4);
+  assert.deepEqual(parseUploadResponse({ receipt }), { receipt });
+  const reference = submissionReference(receipt);
+  assert.equal(reference, `scb:submission:v1:${receipt}`);
+  assert.equal(reference.length, 82);
+  const plaintextSha = sha256(Buffer.from("exploit"));
+  const instruction = encodeSubmitExploitData(7n, reference, plaintextSha);
+  assert.equal(instruction.readUInt32LE(16), 82);
+  assert.equal(instruction.subarray(20, 102).toString("utf8"), reference);
+  assert.deepEqual(instruction.subarray(102), plaintextSha);
+});
+
+test("malformed or legacy upload responses cannot produce a submission reference", () => {
+  const receipt = "a".repeat(64);
+  for (const value of [
+    null, undefined, [], "receipt", {}, { blob_url: receipt },
+    { receipt, blob_url: "https://example.com/upload" },
+    { receipt: 42 }, { receipt: "" }, { receipt: "a".repeat(63) },
+    { receipt: "a".repeat(65) }, { receipt: "A".repeat(64) },
+    { receipt: "g".repeat(64) }, { receipt: `${receipt}\n` },
+    { receipt: `scb:submission:v1:${receipt}` },
+    { receipt: `https://example.com/${receipt}` },
+  ]) {
+    assert.throws(() => parseUploadResponse(value), /invalid upload receipt/);
+  }
+});
+
 test("(T-DRY) dry-run prints payload shapes without network", () => {
   const out = execFileSync(
     process.execPath,
@@ -84,4 +114,5 @@ test("(T-DRY) dry-run prints payload shapes without network", () => {
   );
   assert.match(out, /exploit_sealed_box_b64_len/);
   assert.match(out, /submit_intent_sig_b64_len/);
+  assert.match(out, /submit_exploit data length: 134/);
 });

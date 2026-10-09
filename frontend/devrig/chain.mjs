@@ -28,7 +28,10 @@ import { sealTo, signDetached } from "./keys.mjs";
 
 export { BN };
 export const programId = new PublicKey(PROGRAM_ID);
-const idl = JSON.parse(fs.readFileSync(IDL_PATH, "utf8"));
+// Anchor 1.x takes the program address from the IDL. The local validator may use
+// a freshly generated deploy key, so make the runtime override authoritative for
+// both instruction construction and PDA derivation.
+const idl = { ...JSON.parse(fs.readFileSync(IDL_PATH, "utf8")), address: PROGRAM_ID };
 
 export function connect() {
   return new Connection(RPC_URL, "confirmed");

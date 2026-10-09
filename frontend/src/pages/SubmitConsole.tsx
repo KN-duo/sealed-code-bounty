@@ -32,6 +32,7 @@ import {
 import { bytesToHex, explorerTxUrl } from "../lib/format";
 import { fetchBounty } from "../lib/anchorClient";
 import { startWorkspace, uploadExploit } from "../lib/runner";
+import { submissionReference } from "../lib/submission";
 import { submitExploit, txErrorMessage } from "../lib/tx";
 import type { Bounty, ProtocolConfig } from "../lib/types";
 
@@ -230,9 +231,9 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
       });
       addLog(`enclave receipt: ${receipt.slice(0, 16)}…`);
 
-      // The on-chain blob_url is a synthetic reference; the enclave already holds
-      // the sealed exploit from the upload, keyed by bounty + exploit hash.
-      const blobUrl = `https://blob.local/${bytesToHex(exploitSha)}`;
+      // Commit the exact encrypted upload receipt; the plaintext hash remains
+      // the independent commitment used by the intent signature and verdict.
+      const blobUrl = submissionReference(receipt);
       addLog("sending submit_exploit transaction…");
       const signature = await submit(blobUrl, exploitSha);
       setTxSig(signature);
@@ -386,6 +387,13 @@ function Console({ bounty, config, solver, signMessage, submit, toast }: Console
       </Card>
 
       <Card style={{ padding: 22 }} className="stack">
+        <Card style={{ padding: 12, borderColor: "rgba(255,180,84,.5)" }}>
+          <span className="dim" style={{ fontSize: 13 }}>
+            Authorized challenge only: submissions may interact solely with this bounty's
+            isolated target. External access, credential theft, persistence, destructive
+            behavior, and sandbox escape attempts are prohibited.
+          </span>
+        </Card>
         <Field
           label="Exploit"
           hint="Drop or paste your exploit. It's sealed to the enclave key locally — the plaintext never leaves your browser unencrypted."

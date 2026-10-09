@@ -5,6 +5,7 @@
 // path without Docker or a TEE. Nothing here ships to production.
 
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
 import path from "node:path";
 
 export const DEVRIG_DIR = path.dirname(fileURLToPath(import.meta.url));
@@ -14,6 +15,16 @@ export const REPO_DIR = path.resolve(FRONTEND_DIR, "..");
 export const KEYS_PATH = path.join(DEVRIG_DIR, "rig.local.json");
 export const IDL_PATH = path.join(FRONTEND_DIR, "src", "idl", "sealed_code_bounty.json");
 export const ENV_LOCAL_PATH = path.join(FRONTEND_DIR, ".env.local");
+
+// Vite loads .env.local automatically, but the dev-rig commands are plain Node
+// processes. Load the simple KEY=value file written by `rig.mjs seed` so the
+// documented `node devrig/rig.mjs serve` command uses the same RPC/program.
+if (fs.existsSync(ENV_LOCAL_PATH)) {
+  for (const line of fs.readFileSync(ENV_LOCAL_PATH, "utf8").split(/\r?\n/)) {
+    const match = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (match && process.env[match[1]] === undefined) process.env[match[1]] = match[2];
+  }
+}
 
 // Must match src/env.ts defaults; override with the same VITE_* vars the app reads.
 export const RPC_URL = process.env.VITE_RPC_URL ?? "http://127.0.0.1:8899";

@@ -8,25 +8,28 @@ export interface RelayerConfig {
   enclaveUrl: string;
   operatorPubkey: string;
   pollIntervalMs: number;
+  reconcileIntervalMs: number;
   idlPath: string;
 }
 
-function required(name: string): string {
-  const v = process.env[name];
+function required(env: NodeJS.ProcessEnv, name: string): string {
+  const v = env[name];
   if (!v || v.trim() === "") {
     throw new Error(
-      `Missing required env var ${name}. Required: PROGRAM_ID, FEE_PAYER_KEYPAIR_PATH, OPERATOR_PUBKEY. Optional: RPC_URL, ENCLAVE_URL, POLL_INTERVAL_MS, IDL_PATH.`
+      `Missing required env var ${name}. Required: PROGRAM_ID, FEE_PAYER_KEYPAIR_PATH, OPERATOR_PUBKEY. Optional: RPC_URL, ENCLAVE_URL, POLL_INTERVAL_MS, RECONCILE_INTERVAL_MS, IDL_PATH.`
     );
   }
   return v.trim();
 }
 
-function intEnv(name: string, dflt: number): number {
-  const v = process.env[name];
+function intEnv(env: NodeJS.ProcessEnv, name: string, dflt: number): number {
+  const v = env[name];
   if (v === undefined || v === "") return dflt;
   const n = Number(v);
-  if (!Number.isFinite(n) || n < 0) throw new Error(`${name} must be a non-negative integer, got "${v}"`);
-  return Math.floor(n);
+  if (!Number.isSafeInteger(n) || n < 1000 || n > 300_000) {
+    throw new Error(`${name} must be an integer between 1000 and 300000 milliseconds`);
+  }
+  return n;
 }
 
 /** Loads a solana-keygen JSON file into a Keypair. */
@@ -47,17 +50,18 @@ export function loadKeypair(path: string): Keypair {
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): RelayerConfig {
-  const keypairPath = required("FEE_PAYER_KEYPAIR_PATH");
+  const keypairPath = required(env, "FEE_PAYER_KEYPAIR_PATH");
   return {
     rpcUrl: env.RPC_URL ?? "http://127.0.0.1:8899",
-    programId: required("PROGRAM_ID"),
+    programId: required(env, "PROGRAM_ID"),
     feePayer: loadKeypair(keypairPath),
     enclaveUrl: env.ENCLAVE_URL ?? "http://127.0.0.1:8443",
     // The single pinned enclave ed25519 verification key (Config.operators[0]
     // at launch). Verdict signatures are locally checked against it BEFORE
     // any transaction is sent — defense in depth on top of the on-chain check.
-    operatorPubkey: required("OPERATOR_PUBKEY"),
-    pollIntervalMs: intEnv("POLL_INTERVAL_MS", 10_000),
+    operatorPubkey: required(env, "OPERATOR_PUBKEY"),
+    pollIntervalMs: intEnv(env, "POLL_INTERVAL_MS", 10_000),
+    reconcileIntervalMs: intEnv(env, "RECONCILE_INTERVAL_MS", 30_000),
     idlPath: env.IDL_PATH ?? "target/idl/sealed_code_bounty.json",
   };
 }

@@ -77,12 +77,16 @@ import type { SealedCodeBounty } from "../../../target/types/sealed_code_bounty"
 // fixtures
 // ---------------------------------------------------------------------------
 
-const PROGRAM_ID = new PublicKey("FbqouGmrsFmoC24H3x1vX3LX9jVXhUN5zDH7RnSXba9V");
-
 function idlPath(): string {
   // dist/relayer/src/test -> up four levels = repo root
   return path.resolve(__dirname, "../../../../../target/idl/sealed_code_bounty.json");
 }
+
+// Follow the built IDL so local/devnet program-ID rotations cannot silently
+// leave the relayer tests exercising a different program.
+const PROGRAM_ID = new PublicKey(
+  (JSON.parse(fs.readFileSync(idlPath(), "utf8")) as { address: string }).address,
+);
 
 const silentLog: Logger = {
   debug: () => {},
@@ -112,12 +116,13 @@ function bountyFixture(): { bounty: BountyView; job: Parameters<typeof reconstru
     prizeLamports: new BN(1_000_000),
     deadline: now.addn(3600),
     envBlobSha256: envHash,
+    manifestSha256: Buffer.alloc(32, 9),
     flagCommitment,
     buyerEncPk: Buffer.alloc(32, 9),
     currentSubmission: {
       solver: solverKp.publicKey,
       exploitSha256: exploitHash,
-      blobUrl: "https://blob.example/1",
+      blobUrl: `scb:submission:v1:${"1".repeat(64)}`,
       bondLamports: new BN(50_000),
       submittedAt: now,
     },
@@ -127,7 +132,10 @@ function bountyFixture(): { bounty: BountyView; job: Parameters<typeof reconstru
     [Buffer.from("bounty"), buyerPda.toBuffer(), new BN(7).toArrayLike(Buffer, "le", 8)],
     PROGRAM_ID
   )[0];
-  const job = { bountyPda: bountyKey, solver: solverKp.publicKey, bountyId: new BN(7), exploitSha256: exploitHash };
+  const job = {
+    bountyPda: bountyKey, solver: solverKp.publicKey, bountyId: new BN(7), exploitSha256: exploitHash,
+    submittedAt: now, submissionRef: bounty.currentSubmission!.blobUrl,
+  };
   return { bounty, job };
 }
 
@@ -339,6 +347,20 @@ function chainViewOf(bounty: BountyView) {
     exploit_sha256: Buffer.from(bounty.currentSubmission!.exploitSha256).toString("hex"),
   };
 }
+
+test("verifier receives the manifest hash read from the bounty account", async () => {
+  const { bounty, job } = bountyFixture();
+  let sent: Record<string, unknown> | undefined;
+  const deps = depsWith({
+    fetchImpl: async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ outcome: false, sig: "synthetic", redacted_log: "" }), { status: 200 });
+    },
+  });
+  await callEnclave(deps, job, bounty);
+  assert.equal(sent?.manifest_sha256, Buffer.from(bounty.manifestSha256).toString("hex"));
+  assert.equal(sent?.submission_receipt, "1".repeat(64));
+});
 
 test("(T4) mock-enclave smoke: pipeline lands a locally-verified verdict tx", async () => {
   const mock = await loadMock().startMockEnclave({ tamper: false });
